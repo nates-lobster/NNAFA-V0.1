@@ -1,0 +1,31 @@
+# Visual Studio
+.vs/
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# .NET
+*.deps.json
+*.runtimeconfig.json
+*.pdb
+*.dll
+*.exe
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Project Specific
+Assets/Audio/ocean.mp3
