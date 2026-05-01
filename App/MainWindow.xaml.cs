@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
@@ -37,23 +38,23 @@ namespace NeurofeedbackApp
         private CancellationTokenSource _cts = new CancellationTokenSource();
 
         // ScottPlot 5 Streamers for 4 Channels
-        private ScottPlot.Plottables.DataStreamer _rawStreamTP9;
-        private ScottPlot.Plottables.DataStreamer _filtStreamTP9;
-        private ScottPlot.Plottables.DataStreamer _rawStreamAF7;
-        private ScottPlot.Plottables.DataStreamer _filtStreamAF7;
-        private ScottPlot.Plottables.DataStreamer _rawStreamAF8;
-        private ScottPlot.Plottables.DataStreamer _filtStreamAF8;
-        private ScottPlot.Plottables.DataStreamer _rawStreamTP10;
-        private ScottPlot.Plottables.DataStreamer _filtStreamTP10;
+        private ScottPlot.Plottables.DataStreamer? _rawStreamTP9;
+        private ScottPlot.Plottables.DataStreamer? _filtStreamTP9;
+        private ScottPlot.Plottables.DataStreamer? _rawStreamAF7;
+        private ScottPlot.Plottables.DataStreamer? _filtStreamAF7;
+        private ScottPlot.Plottables.DataStreamer? _rawStreamAF8;
+        private ScottPlot.Plottables.DataStreamer? _filtStreamAF8;
+        private ScottPlot.Plottables.DataStreamer? _rawStreamTP10;
+        private ScottPlot.Plottables.DataStreamer? _filtStreamTP10;
         
-        private ScottPlot.Plottables.DataStreamer _deltaTrend;
-        private ScottPlot.Plottables.DataStreamer _thetaTrend;
-        private ScottPlot.Plottables.DataStreamer _alphaTrend;
-        private ScottPlot.Plottables.DataStreamer _betaTrend;
-        private ScottPlot.Plottables.DataStreamer _gammaTrend;
+        private ScottPlot.Plottables.DataStreamer? _deltaTrend;
+        private ScottPlot.Plottables.DataStreamer? _thetaTrend;
+        private ScottPlot.Plottables.DataStreamer? _alphaTrend;
+        private ScottPlot.Plottables.DataStreamer? _betaTrend;
+        private ScottPlot.Plottables.DataStreamer? _gammaTrend;
         
-        private ScottPlot.Plottables.Scatter _fftScatter;
-        private ScottPlot.Plottables.Scatter _nfFftScatter; // Duplicate for NF tab
+        private ScottPlot.Plottables.Scatter? _fftScatter;
+        private ScottPlot.Plottables.Scatter? _nfFftScatter; // Duplicate for NF tab
 
         private double _currentDelta = 0;
         private double _currentTheta = 0;
@@ -62,18 +63,18 @@ namespace NeurofeedbackApp
         private double _currentGamma = 0;
 
         // NAudio Properties
-        private WaveOutEvent _waveOut;
-        private SignalGenerator _signalGenerator;
-        private VolumeSampleProvider _volumeProvider;
+        private WaveOutEvent? _waveOut;
+        private SignalGenerator? _signalGenerator;
+        private VolumeSampleProvider? _volumeProvider;
         private double _targetRatio = 1.0;
         private float _targetVolume = 0.0f;
         private float _masterVolume = 0.5f;
-        private System.Windows.Threading.DispatcherTimer _volumeLerpTimer;
+        private System.Windows.Threading.DispatcherTimer? _volumeLerpTimer;
 
         // Calibration Properties
         private bool _isCalibrating = false;
         private DateTime _calibrationStartTime;
-        private System.Windows.Threading.DispatcherTimer _calibrationTimer;
+        private System.Windows.Threading.DispatcherTimer? _calibrationTimer;
         private System.Collections.Generic.List<double> _calibrationRatios = new System.Collections.Generic.List<double>();
 
         public MainWindow()
@@ -120,6 +121,8 @@ namespace NeurofeedbackApp
 
         private void BrowseAudio_Click(object sender, RoutedEventArgs e)
         {
+            if (_waveOut == null) return;
+
             OpenFileDialog openFileDialog = new OpenFileDialog();
             openFileDialog.Filter = "Audio Files|*.mp3;*.wav|All Files|*.*";
             if (openFileDialog.ShowDialog() == true)
@@ -198,9 +201,11 @@ namespace NeurofeedbackApp
             
             raw = plot.Plot.Add.DataStreamer(250);
             raw.Color = ScottPlot.Colors.LightGray; raw.LineWidth = 1; raw.ViewScrollLeft();
+            raw.ManageAxisLimits = false;
             
             filt = plot.Plot.Add.DataStreamer(250);
             filt.Color = ScottPlot.Colors.Blue; filt.LineWidth = 2; filt.ViewScrollLeft();
+            filt.ManageAxisLimits = false;
         }
 
         private void SetupFftPlot(ScottPlot.WPF.WpfPlot plot, out ScottPlot.Plottables.Scatter scatter)
@@ -281,14 +286,25 @@ namespace NeurofeedbackApp
         private async Task ReceiveDataLoopAsync()
         {
             var buffer = new byte[65536];
+            var messageBuilder = new StringBuilder();
+
             while (_webSocket.State == WebSocketState.Open && !_cts.IsCancellationRequested)
             {
-                var result = await _webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token);
-                if (result.MessageType == WebSocketMessageType.Close) break;
+                WebSocketReceiveResult result;
+                messageBuilder.Clear();
 
-                var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
                 try
                 {
+                    do
+                    {
+                        result = await _webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token);
+                        if (result.MessageType == WebSocketMessageType.Close) break;
+                        messageBuilder.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+                    } while (!result.EndOfMessage);
+
+                    if (result.MessageType == WebSocketMessageType.Close) break;
+
+                    string message = messageBuilder.ToString();
                     using var doc = JsonDocument.Parse(message);
                     var root = doc.RootElement;
                     if (root.TryGetProperty("type", out var typeProp) && typeProp.GetString() == "telemetry")
@@ -296,7 +312,16 @@ namespace NeurofeedbackApp
                         UpdateUI(root);
                     }
                 }
-                catch (Exception ex) { Console.WriteLine($"JSON Parse error: {ex.Message}"); }
+                catch (JsonException ex) 
+                { 
+                    // Log to integrated console if possible
+                    AppendToConsole($"[JSON Error] Fragmented or invalid: {ex.Message}");
+                }
+                catch (Exception ex) 
+                { 
+                    Console.WriteLine($"Receive error: {ex.Message}");
+                    break;
+                }
             }
         }
 
@@ -332,33 +357,31 @@ namespace NeurofeedbackApp
 
                 if (status == "OK" || status == "HOLD")
                 {
-                    _deltaTrend.Add(_currentDelta);
-                    _thetaTrend.Add(_currentTheta);
-                    _alphaTrend.Add(_currentAlpha);
-                    _betaTrend.Add(_currentBeta);
-                    _gammaTrend.Add(_currentGamma);
+                    _deltaTrend?.Add(_currentDelta);
+                    _thetaTrend?.Add(_currentTheta);
+                    _alphaTrend?.Add(_currentAlpha);
+                    _betaTrend?.Add(_currentBeta);
+                    _gammaTrend?.Add(_currentGamma);
                     TrendPlot.Refresh();
                 }
 
                 if (data.TryGetProperty("fft_freqs", out var freqsProp) && data.TryGetProperty("fft_psd", out var psdProp))
                 {
-                    var freqsList = freqsProp.EnumerateArray();
-                    var psdList = psdProp.EnumerateArray();
-                    
                     int count = freqsProp.GetArrayLength();
                     double[] freqsArray = new double[count];
                     double[] psdArray = new double[count];
                     
-                    int j = 0; foreach (var val in freqsList) freqsArray[j++] = val.GetDouble();
-                    j = 0; foreach (var val in psdList) psdArray[j++] = val.GetDouble();
+                    int j = 0; foreach (var val in freqsProp.EnumerateArray()) freqsArray[j++] = val.GetDouble();
+                    j = 0; foreach (var val in psdProp.EnumerateArray()) psdArray[j++] = val.GetDouble();
 
-                    FftPlot.Plot.Remove(_fftScatter);
+                    // Replace FFT plots (ScottPlot 5 Scatter.Data is read-only)
+                    if (_fftScatter != null) FftPlot.Plot.Remove(_fftScatter);
                     _fftScatter = FftPlot.Plot.Add.ScatterLine(freqsArray, psdArray);
                     _fftScatter.Color = ScottPlot.Colors.Purple;
                     _fftScatter.LineWidth = 2;
                     FftPlot.Refresh();
 
-                    NfFftPlot.Plot.Remove(_nfFftScatter);
+                    if (_nfFftScatter != null) NfFftPlot.Plot.Remove(_nfFftScatter);
                     _nfFftScatter = NfFftPlot.Plot.Add.ScatterLine(freqsArray, psdArray);
                     _nfFftScatter.Color = ScottPlot.Colors.Purple;
                     _nfFftScatter.LineWidth = 2;
@@ -367,8 +390,10 @@ namespace NeurofeedbackApp
             });
         }
 
-        private void ProcessEegData(JsonElement data, string channel, ScottPlot.Plottables.DataStreamer rawStream, ScottPlot.Plottables.DataStreamer filtStream, ScottPlot.WPF.WpfPlot plot)
+        private void ProcessEegData(JsonElement data, string channel, ScottPlot.Plottables.DataStreamer? rawStream, ScottPlot.Plottables.DataStreamer? filtStream, ScottPlot.WPF.WpfPlot plot)
         {
+            if (rawStream == null || filtStream == null) return;
+
             if (data.TryGetProperty($"new_raw_{channel}", out var rawList) && data.TryGetProperty($"new_filt_{channel}", out var filtList))
             {
                 int rawCount = rawList.GetArrayLength();
@@ -482,7 +507,7 @@ namespace NeurofeedbackApp
 
             if (elapsed >= 60)
             {
-                _calibrationTimer.Stop();
+                _calibrationTimer?.Stop();
                 _isCalibrating = false;
                 CalibrateButton.IsEnabled = true;
 
@@ -503,8 +528,8 @@ namespace NeurofeedbackApp
             }
         }
 
-        private void AudioEnable_Checked(object sender, RoutedEventArgs e) { _waveOut.Play(); }
-        private void AudioEnable_Unchecked(object sender, RoutedEventArgs e) { _waveOut.Pause(); }
+        private void AudioEnable_Checked(object sender, RoutedEventArgs e) { _waveOut?.Play(); }
+        private void AudioEnable_Unchecked(object sender, RoutedEventArgs e) { _waveOut?.Pause(); }
 
         private Process? _engineProcess;
 
@@ -527,14 +552,30 @@ namespace NeurofeedbackApp
 
             try
             {
-                string enginePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\..\..\PyApp\engine.py");
-                enginePath = System.IO.Path.GetFullPath(enginePath);
-                
-                if (System.IO.File.Exists(enginePath))
+                // Try to find engine.py relative to the executable OR the current working directory
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string[] potentialPaths = {
+                    System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, @"..\..\..\..\..\PyApp\engine.py")), // CLI Run (bin/debug/net10/...)
+                    System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, @"..\..\..\PyApp\engine.py")),       // Standard Build
+                    System.IO.Path.GetFullPath(System.IO.Path.Combine(Directory.GetCurrentDirectory(), @"PyApp\engine.py")), // Root Dir
+                    System.IO.Path.GetFullPath(@"PyApp\engine.py") // Current working dir
+                };
+
+                string enginePath = "";
+                foreach (var path in potentialPaths)
                 {
+                    if (System.IO.File.Exists(path))
+                    {
+                        enginePath = path;
+                        break;
+                    }
+                }
+                
+                if (!string.IsNullOrEmpty(enginePath))
+                {
+                    AppendToConsole($"Attempting to launch engine: {enginePath}");
                     _engineProcess = new Process();
                     _engineProcess.StartInfo.FileName = "python";
-                    // Use -u to force unbuffered output so we get live updates in the console
                     _engineProcess.StartInfo.Arguments = $"-u \"{enginePath}\"";
                     _engineProcess.StartInfo.UseShellExecute = false;
                     _engineProcess.StartInfo.CreateNoWindow = true;
@@ -542,18 +583,19 @@ namespace NeurofeedbackApp
                     _engineProcess.StartInfo.RedirectStandardError = true;
                     _engineProcess.StartInfo.WorkingDirectory = System.IO.Path.GetDirectoryName(enginePath) ?? "";
 
-                    _engineProcess.OutputDataReceived += (s, args) => { if (args.Data != null) AppendToConsole("[Engine] " + args.Data); };
-                    _engineProcess.ErrorDataReceived += (s, args) => { if (args.Data != null) AppendToConsole("[Engine ERROR] " + args.Data); };
+                    _engineProcess.OutputDataReceived += (s, args) => { if (args.Data != null) AppendToConsole(args.Data); };
+                    _engineProcess.ErrorDataReceived += (s, args) => { if (args.Data != null) AppendToConsole("[ERROR] " + args.Data); };
 
                     _engineProcess.Start();
                     _engineProcess.BeginOutputReadLine();
                     _engineProcess.BeginErrorReadLine();
                     
-                    AppendToConsole("Started Python Engine (Hidden).");
+                    AppendToConsole("Python Engine launched successfully.");
                 }
                 else
                 {
-                    AppendToConsole("engine.py not found at: " + enginePath);
+                    AppendToConsole("CRITICAL: engine.py not found. Searched:");
+                    foreach(var p in potentialPaths) AppendToConsole(" - " + p);
                 }
             }
             catch (Exception ex)

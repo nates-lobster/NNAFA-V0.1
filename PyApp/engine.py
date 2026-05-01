@@ -69,30 +69,31 @@ def calculate_bands(freqs, psd):
     global smoothed_bands
     bands = {}
     
+    # Use np.trapezoid for NumPy 2.x compatibility
     # Delta: 1-4 Hz
     delta_idx = np.logical_and(freqs >= 1, freqs <= 4)
-    bands["delta"] = float(np.trapezoid(psd[delta_idx], freqs[delta_idx]))
+    bands["delta"] = float(np.trapezoid(psd[delta_idx], freqs[delta_idx])) if any(delta_idx) else 0.0
     
     # Theta: 4-8 Hz
     theta_idx = np.logical_and(freqs >= 4, freqs <= 8)
-    bands["theta"] = float(np.trapezoid(psd[theta_idx], freqs[theta_idx]))
+    bands["theta"] = float(np.trapezoid(psd[theta_idx], freqs[theta_idx])) if any(theta_idx) else 0.0
     
     # Alpha: 8-12 Hz
     alpha_idx = np.logical_and(freqs >= 8, freqs <= 12)
-    bands["alpha"] = float(np.trapezoid(psd[alpha_idx], freqs[alpha_idx]))
+    bands["alpha"] = float(np.trapezoid(psd[alpha_idx], freqs[alpha_idx])) if any(alpha_idx) else 0.0
     
-    # Beta: 12-30 Hz (Fixed gap)
+    # Beta: 12-30 Hz
     beta_idx = np.logical_and(freqs >= 12, freqs <= 30)
-    bands["beta"] = float(np.trapezoid(psd[beta_idx], freqs[beta_idx]))
+    bands["beta"] = float(np.trapezoid(psd[beta_idx], freqs[beta_idx])) if any(beta_idx) else 0.0
     
     # Gamma: 30-40 Hz
     gamma_idx = np.logical_and(freqs >= 30, freqs <= 40)
-    bands["gamma"] = float(np.trapezoid(psd[gamma_idx], freqs[gamma_idx]))
+    bands["gamma"] = float(np.trapezoid(psd[gamma_idx], freqs[gamma_idx])) if any(gamma_idx) else 0.0
     
     # Apply Exponential Moving Average (EMA)
     for band in bands:
         if smoothed_bands[band] == 0:
-            smoothed_bands[band] = bands[band] # Initialize
+            smoothed_bands[band] = bands[band]
         else:
             smoothed_bands[band] = (bands[band] * SMOOTHING_FACTOR) + (smoothed_bands[band] * (1.0 - SMOOTHING_FACTOR))
             
@@ -102,31 +103,33 @@ async def websocket_handler(websocket):
     """Handle new websocket connections and incoming config messages."""
     global ARTIFACT_THRESHOLD, LOW_CUT, HIGH_CUT, CONFIG_CHANGED
     connected_clients.add(websocket)
+    log(f"Client connected. Total clients: {len(connected_clients)}")
     try:
         async for message in websocket:
             try:
                 data = json.loads(message)
                 if data.get("type") == "config":
                     updated = False
-                    if "threshold" in data and float(data["threshold"]) != ARTIFACT_THRESHOLD:
+                    if "threshold" in data:
                         ARTIFACT_THRESHOLD = float(data["threshold"])
-                        log(f"[{time.strftime('%H:%M:%S')}] [CONFIG] Artifact threshold updated to: {ARTIFACT_THRESHOLD}uV")
+                        log(f"[CONFIG] Artifact threshold: {ARTIFACT_THRESHOLD}uV")
                     
-                    if "low_cut" in data and float(data["low_cut"]) != LOW_CUT:
+                    if "low_cut" in data:
                         LOW_CUT = float(data["low_cut"])
                         updated = True
                     
-                    if "high_cut" in data and float(data["high_cut"]) != HIGH_CUT:
+                    if "high_cut" in data:
                         HIGH_CUT = float(data["high_cut"])
                         updated = True
                         
                     if updated:
                         CONFIG_CHANGED = True
-                        log(f"[{time.strftime('%H:%M:%S')}] [CONFIG] Bandpass filter updated to: {LOW_CUT}Hz - {HIGH_CUT}Hz")
-            except Exception:
-                pass
+                        log(f"[CONFIG] Filter: {LOW_CUT}Hz - {HIGH_CUT}Hz")
+            except Exception as e:
+                log(f"Config error: {e}")
     finally:
         connected_clients.remove(websocket)
+        log(f"Client disconnected. Total clients: {len(connected_clients)}")
 
 async def broadcast(message):
     """Send message to all connected C# clients."""
@@ -135,116 +138,108 @@ async def broadcast(message):
 
 async def acquisition_loop():
     global last_valid_metrics, CONFIG_CHANGED
-    log("Looking for an EEG stream...")
     
-    try:
-        streams = resolve_byprop('type', 'EEG', timeout=5)
-        if not streams:
-            log("Error: No EEG stream found.")
-            return
-    except Exception as e:
-        log(f"LSL Error: {e}")
-        return
-
-    inlet = StreamInlet(streams[0])
-    log(f"Connected to: {streams[0].name()} ({streams[0].nominal_srate()} Hz)")
-
-    data_buffer = np.zeros((BUFFER_SAMPLES, CHANNELS))
-    notch_coeffs, bandpass_coeffs = create_filters(FS)
-    
-    total_samples_collected = 0
-    signal_stride = 25 # ~10.24 Hz refresh rate
-    
-    log("Acquisition loop started. Buffering raw data...")
-
-    smoothed_psd = None
-
     while True:
-        # Check if filters need to be recreated from UI slider
-        if CONFIG_CHANGED:
+        log("Searching for EEG stream (ensure BlueMuse is streaming)...")
+        streams = []
+        try:
+            # Look for ANY EEG stream, more lenient resolution
+            streams = resolve_byprop('type', 'EEG', timeout=2)
+            if not streams:
+                # Try by name if type fails (some Muse LSL apps use name='Muse')
+                streams = resolve_byprop('name', 'Muse', timeout=1)
+                
+            if not streams:
+                await asyncio.sleep(2)
+                continue
+        except Exception as e:
+            log(f"LSL Search Error: {e}")
+            await asyncio.sleep(2)
+            continue
+
+        try:
+            inlet = StreamInlet(streams[0])
+            log(f"Connected to: {streams[0].name()} @ {streams[0].nominal_srate()}Hz")
+
+            data_buffer = np.zeros((BUFFER_SAMPLES, CHANNELS))
             notch_coeffs, bandpass_coeffs = create_filters(FS)
-            CONFIG_CHANGED = False
             
-        # Non-blocking pull
-        sample, timestamp = inlet.pull_sample(timeout=0.0)
-        
-        if sample:
-            data_buffer = np.roll(data_buffer, -1, axis=0)
-            data_buffer[-1, :] = sample[:CHANNELS]
-            total_samples_collected += 1
+            total_samples_collected = 0
+            signal_stride = 25 
+            smoothed_psd = None
 
-            if total_samples_collected >= BUFFER_SAMPLES and total_samples_collected % signal_stride == 0:
-                filtered = lfilter(notch_coeffs[0], notch_coeffs[1], data_buffer, axis=0)
-                filtered = lfilter(bandpass_coeffs[0], bandpass_coeffs[1], filtered, axis=0)
+            while True:
+                if CONFIG_CHANGED:
+                    notch_coeffs, bandpass_coeffs = create_filters(FS)
+                    CONFIG_CHANGED = False
+                    
+                sample, timestamp = inlet.pull_sample(timeout=0.01)
                 
-                is_clean, max_ptp = is_artifact_free(filtered, threshold=ARTIFACT_THRESHOLD)
-                
-                # We analyze AF7 for the FFT
-                af7_filtered = filtered[:, AF7_INDEX]
-                
-                # Perform FFT using Welch's method
-                freqs, psd = welch(af7_filtered, FS, nperseg=FS*2)
-                
-                if smoothed_psd is None:
-                    smoothed_psd = psd
-                else:
-                    smoothed_psd = (psd * SMOOTHING_FACTOR) + (smoothed_psd * (1.0 - SMOOTHING_FACTOR))
+                if sample:
+                    data_buffer = np.roll(data_buffer, -1, axis=0)
+                    data_buffer[-1, :] = sample[:CHANNELS]
+                    total_samples_collected += 1
 
-                bands = calculate_bands(freqs, smoothed_psd)
-                ratio = bands["alpha"] / bands["beta"] if bands["beta"] > 0 else 0
-                
-                # Broadcast metrics to LSL
-                metrics_outlet.push_sample([bands["delta"], bands["theta"], bands["alpha"], bands["beta"], bands["gamma"], ratio])
-                
-                # Construct payload
-                payload = {
-                    "type": "telemetry",
-                    "status": "OK" if is_clean else "HOLD" if last_valid_metrics else "DIRTY",
-                    "ptp": max_ptp,
-                    "delta": bands["delta"],
-                    "theta": bands["theta"],
-                    "alpha": bands["alpha"],
-                    "beta": bands["beta"],
-                    "gamma": bands["gamma"],
-                    "ratio": ratio,
-                    "new_raw_tp9": data_buffer[-signal_stride:, 0].tolist(), 
-                    "new_filt_tp9": filtered[-signal_stride:, 0].tolist(),
-                    "new_raw_af7": data_buffer[-signal_stride:, 1].tolist(), 
-                    "new_filt_af7": filtered[-signal_stride:, 1].tolist(),
-                    "new_raw_af8": data_buffer[-signal_stride:, 2].tolist(), 
-                    "new_filt_af8": filtered[-signal_stride:, 2].tolist(),
-                    "new_raw_tp10": data_buffer[-signal_stride:, 3].tolist(), 
-                    "new_filt_tp10": filtered[-signal_stride:, 3].tolist(),
-                    "fft_freqs": freqs[freqs <= 40].tolist(),
-                    "fft_psd": smoothed_psd[freqs <= 40].tolist()
-                }
+                    if total_samples_collected >= BUFFER_SAMPLES and total_samples_collected % signal_stride == 0:
+                        filtered = lfilter(notch_coeffs[0], notch_coeffs[1], data_buffer, axis=0)
+                        filtered = lfilter(bandpass_coeffs[0], bandpass_coeffs[1], filtered, axis=0)
+                        
+                        is_clean, max_ptp = is_artifact_free(filtered, threshold=ARTIFACT_THRESHOLD)
+                        af7_filtered = filtered[:, AF7_INDEX]
+                        
+                        freqs, psd = welch(af7_filtered, FS, nperseg=FS*2)
+                        
+                        if smoothed_psd is None:
+                            smoothed_psd = psd
+                        else:
+                            smoothed_psd = (psd * SMOOTHING_FACTOR) + (smoothed_psd * (1.0 - SMOOTHING_FACTOR))
 
-                if is_clean:
-                    marker_outlet.push_sample(["OK"])
-                    log(f"[{time.strftime('%H:%M:%S')}] [OK] Clean chunk. Alpha: {bands['alpha']:.2f}, Beta: {bands['beta']:.2f}")
-                    last_valid_metrics = payload
-                    await broadcast(payload)
-                elif last_valid_metrics:
-                    marker_outlet.push_sample(["HOLD"])
-                    log(f"[{time.strftime('%H:%M:%S')}] [HOLD] Artifact ({max_ptp:.1f}uV). Holding last state.")
-                    hold_payload = dict(last_valid_metrics)
-                    hold_payload["status"] = "HOLD"
-                    hold_payload["new_raw_tp9"] = payload["new_raw_tp9"]
-                    hold_payload["new_filt_tp9"] = payload["new_filt_tp9"]
-                    hold_payload["new_raw_af7"] = payload["new_raw_af7"]
-                    hold_payload["new_filt_af7"] = payload["new_filt_af7"]
-                    hold_payload["new_raw_af8"] = payload["new_raw_af8"]
-                    hold_payload["new_filt_af8"] = payload["new_filt_af8"]
-                    hold_payload["new_raw_tp10"] = payload["new_raw_tp10"]
-                    hold_payload["new_filt_tp10"] = payload["new_filt_tp10"]
-                    await broadcast(hold_payload)
-                else:
-                    marker_outlet.push_sample(["DIRTY"])
-                    log(f"[{time.strftime('%H:%M:%S')}] [DIRTY] Initial buffer noisy ({max_ptp:.1f}uV). Waiting for clean signal.")
-                    await broadcast(payload)
+                        bands = calculate_bands(freqs, smoothed_psd)
+                        ratio = bands["alpha"] / bands["beta"] if bands["beta"] > 0 else 0
+                        
+                        metrics_outlet.push_sample([bands["delta"], bands["theta"], bands["alpha"], bands["beta"], bands["gamma"], ratio])
+                        
+                        payload = {
+                            "type": "telemetry",
+                            "status": "OK" if is_clean else "HOLD" if last_valid_metrics else "DIRTY",
+                            "ptp": max_ptp,
+                            "delta": bands["delta"], "theta": bands["theta"], "alpha": bands["alpha"], "beta": bands["beta"], "gamma": bands["gamma"],
+                            "ratio": ratio,
+                            "new_raw_tp9": data_buffer[-signal_stride:, 0].tolist(), 
+                            "new_filt_tp9": filtered[-signal_stride:, 0].tolist(),
+                            "new_raw_af7": data_buffer[-signal_stride:, 1].tolist(), 
+                            "new_filt_af7": filtered[-signal_stride:, 1].tolist(),
+                            "new_raw_af8": data_buffer[-signal_stride:, 2].tolist(), 
+                            "new_filt_af8": filtered[-signal_stride:, 2].tolist(),
+                            "new_raw_tp10": data_buffer[-signal_stride:, 3].tolist(), 
+                            "new_filt_tp10": filtered[-signal_stride:, 3].tolist(),
+                            "fft_freqs": freqs[freqs <= 40].tolist(),
+                            "fft_psd": smoothed_psd[freqs <= 40].tolist()
+                        }
 
-        # Yield to asyncio event loop
-        await asyncio.sleep(0.001)
+                        if is_clean:
+                            marker_outlet.push_sample(["OK"])
+                            last_valid_metrics = payload
+                            await broadcast(payload)
+                        elif last_valid_metrics:
+                            marker_outlet.push_sample(["HOLD"])
+                            hold_payload = dict(last_valid_metrics)
+                            hold_payload["status"] = "HOLD"
+                            # Still update the raw/filt waves even in HOLD
+                            for ch in ["tp9", "af7", "af8", "tp10"]:
+                                hold_payload[f"new_raw_{ch}"] = payload[f"new_raw_{ch}"]
+                                hold_payload[f"new_filt_{ch}"] = payload[f"new_filt_{ch}"]
+                            await broadcast(hold_payload)
+                        else:
+                            marker_outlet.push_sample(["DIRTY"])
+                            await broadcast(payload)
+
+                await asyncio.sleep(0.001)
+
+        except Exception as e:
+            log(f"Acquisition Error: {e}. Retrying search...")
+            await asyncio.sleep(2)
+
 
 async def main():
     log("--- NeuroMemoryStudy Backend Engine ---")
