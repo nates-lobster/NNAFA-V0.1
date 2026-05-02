@@ -1,5 +1,5 @@
 import numpy as np
-from pylsl import StreamInlet, resolve_byprop, StreamInfo, StreamOutlet
+from pylsl import StreamInlet, resolve_byprop, StreamInfo, StreamOutlet, local_clock
 from scipy.signal import butter, iirnotch, lfilter, welch
 import time
 import asyncio
@@ -197,7 +197,8 @@ async def acquisition_loop():
                         bands = calculate_bands(freqs, smoothed_psd)
                         ratio = bands["alpha"] / bands["beta"] if bands["beta"] > 0 else 0
                         
-                        metrics_outlet.push_sample([bands["delta"], bands["theta"], bands["alpha"], bands["beta"], bands["gamma"], ratio])
+                        now = local_clock()
+                        metrics_outlet.push_sample([bands["delta"], bands["theta"], bands["alpha"], bands["beta"], bands["gamma"], ratio], timestamp=now)
                         
                         payload = {
                             "type": "telemetry",
@@ -218,11 +219,11 @@ async def acquisition_loop():
                         }
 
                         if is_clean:
-                            marker_outlet.push_sample(["OK"])
+                            marker_outlet.push_sample(["OK"], timestamp=now)
                             last_valid_metrics = payload
                             await broadcast(payload)
                         elif last_valid_metrics:
-                            marker_outlet.push_sample(["HOLD"])
+                            marker_outlet.push_sample(["HOLD"], timestamp=now)
                             hold_payload = dict(last_valid_metrics)
                             hold_payload["status"] = "HOLD"
                             # Still update the raw/filt waves even in HOLD
@@ -231,7 +232,7 @@ async def acquisition_loop():
                                 hold_payload[f"new_filt_{ch}"] = payload[f"new_filt_{ch}"]
                             await broadcast(hold_payload)
                         else:
-                            marker_outlet.push_sample(["DIRTY"])
+                            marker_outlet.push_sample(["DIRTY"], timestamp=now)
                             await broadcast(payload)
 
                 await asyncio.sleep(0.001)

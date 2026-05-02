@@ -349,6 +349,7 @@ namespace NeurofeedbackApp
                 GammaText.Text = _currentGamma.ToString("F2");
 
                 CalculateRatio();
+                if (NfRatioText != null) NfRatioText.Text = RatioText?.Text ?? "0.00";
 
                 ProcessEegData(data, "tp9", _rawStreamTP9, _filtStreamTP9, EegPlotTP9);
                 ProcessEegData(data, "af7", _rawStreamAF7, _filtStreamAF7, EegPlotAF7);
