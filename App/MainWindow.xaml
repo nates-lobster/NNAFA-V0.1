@@ -70,11 +70,8 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        
-                        <!-- Top Row: Ears -->
                         <ScottPlot:WpfPlot x:Name="EegPlotTP9" Grid.Row="0" Grid.Column="0" Margin="2"/>
                         <ScottPlot:WpfPlot x:Name="EegPlotTP10" Grid.Row="0" Grid.Column="1" Margin="2"/>
-                        <!-- Bottom Row: Foreheads -->
                         <ScottPlot:WpfPlot x:Name="EegPlotAF7" Grid.Row="1" Grid.Column="0" Margin="2"/>
                         <ScottPlot:WpfPlot x:Name="EegPlotAF8" Grid.Row="1" Grid.Column="1" Margin="2"/>
                     </Grid>
@@ -87,7 +84,7 @@
                         <ScottPlot:WpfPlot x:Name="FftPlot" Grid.Column="0"/>
                         <Border Grid.Column="1" Margin="10,0,0,0" Background="#e0e0e0" Padding="15">
                             <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="Live Alpha/Beta" FontWeight="Bold" HorizontalAlignment="Center"/>
+                                <TextBlock Text="Live Ratio" FontWeight="Bold" HorizontalAlignment="Center"/>
                                 <TextBlock x:Name="FftRatioText" Text="0.00" FontSize="36" FontWeight="Bold" Foreground="#333" HorizontalAlignment="Center"/>
                             </StackPanel>
                         </Border>
@@ -95,139 +92,120 @@
                 </Grid>
             </TabItem>
             
-            <!-- Tab 2: Band Power Trends -->
-            <TabItem Header="Band Power Trends">
+            <TabItem Header="Trends">
                 <Grid>
-                    <ScottPlot:WpfPlot x:Name="TrendPlot" Margin="5"/>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Center" Margin="10">
+                        <CheckBox x:Name="ShowDeltaTrend" Content="Delta" IsChecked="True" Foreground="#FF0000" Margin="10,0" Checked="TrendVisibility_Changed" Unchecked="TrendVisibility_Changed"/>
+                        <CheckBox x:Name="ShowThetaTrend" Content="Theta" IsChecked="True" Foreground="#00FF00" Margin="10,0" Checked="TrendVisibility_Changed" Unchecked="TrendVisibility_Changed"/>
+                        <CheckBox x:Name="ShowAlphaTrend" Content="Alpha" IsChecked="True" Foreground="#0000FF" Margin="10,0" Checked="TrendVisibility_Changed" Unchecked="TrendVisibility_Changed"/>
+                        <CheckBox x:Name="ShowBetaTrend"  Content="Beta"  IsChecked="True" Foreground="#888800" Margin="10,0" Checked="TrendVisibility_Changed" Unchecked="TrendVisibility_Changed"/>
+                        <CheckBox x:Name="ShowGammaTrend" Content="Gamma" IsChecked="True" Foreground="#FF00FF" Margin="10,0" Checked="TrendVisibility_Changed" Unchecked="TrendVisibility_Changed"/>
+                    </StackPanel>
+                    <ScottPlot:WpfPlot x:Name="TrendPlot" Grid.Row="1" Margin="5"/>
                 </Grid>
             </TabItem>
 
-            <!-- Tab 3: Neurofeedback (Audio) -->
-            <TabItem Header="Neurofeedback Training">
+            <TabItem Header="Neurofeedback">
                 <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="1.5*"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-                    
+                    <Grid.RowDefinitions><RowDefinition Height="1.5*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <Grid Grid.Row="0" Margin="5">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <ScottPlot:WpfPlot x:Name="NfFftPlot" Grid.Column="0"/>
                         <Border Grid.Column="1" Margin="10,0,0,0" Background="#e0e0e0" Padding="15">
                             <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="Live Alpha/Beta" FontWeight="Bold" HorizontalAlignment="Center"/>
+                                <TextBlock Text="Ratio" FontWeight="Bold" HorizontalAlignment="Center"/>
                                 <TextBlock x:Name="NfRatioText" Text="0.00" FontSize="48" FontWeight="Bold" Foreground="#333" HorizontalAlignment="Center"/>
                             </StackPanel>
                         </Border>
                     </Grid>
-                    
                     <Border Grid.Row="1" Margin="20" Background="#f8f8f8" Padding="20">
                         <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <StackPanel Grid.Column="0">
-                                <TextBlock Text="Auditory Feedback Training" FontSize="20" FontWeight="Bold" Margin="0,0,0,10"/>
-                                <TextBlock Text="A continuous tone will play. As your selected ratio (e.g. Alpha/Beta) increases, the tone volume will proportionally decrease. Silence means success." TextWrapping="Wrap" Margin="0,0,0,20"/>
-                                
+                                <TextBlock Text="Audio Training" FontSize="20" FontWeight="Bold" Margin="0,0,0,10"/>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,15">
-                                    <TextBlock Text="Enable Audio Tone:" VerticalAlignment="Center" FontWeight="Bold" Margin="0,0,10,0"/>
-                                    <CheckBox x:Name="AudioEnableCheckbox" Checked="AudioEnable_Checked" Unchecked="AudioEnable_Unchecked" VerticalAlignment="Center">
-                                        <CheckBox.LayoutTransform>
-                                            <ScaleTransform ScaleX="1.5" ScaleY="1.5"/>
-                                        </CheckBox.LayoutTransform>
-                                    </CheckBox>
+                                    <TextBlock Text="Enable:" VerticalAlignment="Center" Margin="0,0,10,0"/><CheckBox x:Name="AudioEnableCheckbox" Checked="AudioEnable_Checked" Unchecked="AudioEnable_Unchecked" VerticalAlignment="Center"/>
                                 </StackPanel>
-
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,15">
-                                    <Button x:Name="BrowseAudioButton" Content="Browse Custom Audio..." Width="150" Padding="5" Margin="0,0,10,0" Click="BrowseAudio_Click"/>
-                                    <TextBlock x:Name="LoadedAudioText" Text="Using Built-in Tone (432Hz)" VerticalAlignment="Center" FontStyle="Italic"/>
+                                    <Button Content="Browse..." Width="100" Click="BrowseAudio_Click"/><TextBlock x:Name="LoadedAudioText" Text="Tone" VerticalAlignment="Center" Margin="10,0,0,0"/>
                                 </StackPanel>
-
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,15">
-                                    <TextBlock Text="Master Volume:" VerticalAlignment="Center" FontWeight="Bold" Margin="0,0,10,0" Width="140"/>
-                                    <Slider x:Name="MasterVolumeSlider" Minimum="0" Maximum="1" Value="0.5" Width="200" ValueChanged="MasterVolumeSlider_ValueChanged"/>
-                                </StackPanel>
-
-                                <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="Current Audio Volume: " FontWeight="Bold" VerticalAlignment="Center" Width="140"/>
-                                    <ProgressBar x:Name="VolumeProgressBar" Minimum="0" Maximum="1" Value="0" Width="200" Height="20" Foreground="Green"/>
-                                </StackPanel>
+                                <Slider x:Name="MasterVolumeSlider" Minimum="0" Maximum="1" Value="0.5" Width="200" ValueChanged="MasterVolumeSlider_ValueChanged"/>
+                                <ProgressBar x:Name="VolumeProgressBar" Minimum="0" Maximum="1" Value="0" Width="200" Height="20" Margin="0,10,0,0"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="20,0,0,0">
-                                <TextBlock Text="Personal Baseline Calibration" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,10"/>
-                                <Button x:Name="CalibrateButton" Content="Start 60s Calibration" Width="200" Height="40" FontSize="14" FontWeight="Bold" Click="CalibrateButton_Click"/>
-                                <TextBlock x:Name="CalibrationStatusText" Text="Ready" HorizontalAlignment="Center" Margin="0,10,0,5" FontStyle="Italic"/>
-                                <ProgressBar x:Name="CalibrationProgressBar" Minimum="0" Maximum="60" Value="0" Width="200" Height="15"/>
+                                <Button x:Name="CalibrateButton" Content="Calibrate" Width="150" Click="CalibrateButton_Click"/>
+                                <TextBlock x:Name="CalibrationStatusText" Text="Ready" HorizontalAlignment="Center" Margin="0,10,0,0"/>
+                                <ProgressBar x:Name="CalibrationProgressBar" Minimum="0" Maximum="60" Value="0" Width="150" Height="10"/>
                             </StackPanel>
                         </Grid>
                     </Border>
                 </Grid>
             </TabItem>
             
-            <!-- Tab 4: Settings & Tuning -->
-            <TabItem Header="Settings &amp; Tuning">
+            <TabItem Header="Settings">
                 <StackPanel Margin="20">
-                    <TextBlock Text="Artifact Rejection Threshold (uV)" FontWeight="Bold" Margin="0,0,0,10" FontSize="14"/>
-                    <StackPanel Orientation="Horizontal">
-                        <Slider x:Name="ThresholdSlider" Minimum="50" Maximum="500" Value="150" Width="300" 
-                                TickFrequency="10" IsSnapToTickEnabled="True" ValueChanged="ThresholdSlider_ValueChanged"/>
-                        <TextBlock x:Name="ThresholdValueText" Text="150 uV" Margin="15,0,0,0" VerticalAlignment="Center" FontWeight="Bold"/>
-                    </StackPanel>
-                    <TextBlock Text="Lower values reject more data (stricter). Higher values allow more artifacts through." 
-                               Foreground="Gray" Margin="0,5,0,20"/>
-
-                    <TextBlock Text="Bandpass Filter (Low-Cut Hz)" FontWeight="Bold" Margin="0,0,0,10" FontSize="14"/>
-                    <StackPanel Orientation="Horizontal">
-                        <Slider x:Name="LowCutSlider" Minimum="0.5" Maximum="5.0" Value="1.0" Width="300" 
-                                TickFrequency="0.5" IsSnapToTickEnabled="True" ValueChanged="FilterSlider_ValueChanged"/>
-                        <TextBlock x:Name="LowCutValueText" Text="1.0 Hz" Margin="15,0,0,0" VerticalAlignment="Center" FontWeight="Bold"/>
-                    </StackPanel>
-                    <TextBlock Text="Frequencies below this are filtered out (removes drift/sweat)." Foreground="Gray" Margin="0,5,0,20"/>
-
-                    <TextBlock Text="Bandpass Filter (High-Cut Hz)" FontWeight="Bold" Margin="0,0,0,10" FontSize="14"/>
-                    <StackPanel Orientation="Horizontal">
-                        <Slider x:Name="HighCutSlider" Minimum="30.0" Maximum="50.0" Value="40.0" Width="300" 
-                                TickFrequency="1.0" IsSnapToTickEnabled="True" ValueChanged="FilterSlider_ValueChanged"/>
-                        <TextBlock x:Name="HighCutValueText" Text="40.0 Hz" Margin="15,0,0,0" VerticalAlignment="Center" FontWeight="Bold"/>
-                    </StackPanel>
-                    <TextBlock Text="Frequencies above this are filtered out (removes EMG/muscle noise)." Foreground="Gray" Margin="0,5,0,20"/>
-
-                    <TextBlock Text="Neurofeedback Target Ratio Threshold" FontWeight="Bold" Margin="0,15,0,10" FontSize="14"/>
-                    <StackPanel Orientation="Horizontal">
-                        <Slider x:Name="TargetRatioSlider" Minimum="0.1" Maximum="3.0" Value="1.0" Width="300" 
-                                TickFrequency="0.1" IsSnapToTickEnabled="True" ValueChanged="TargetRatioSlider_ValueChanged"/>
-                        <TextBlock x:Name="TargetRatioValueText" Text="1.0" Margin="15,0,0,0" VerticalAlignment="Center" FontWeight="Bold"/>
-                    </StackPanel>
-                    <TextBlock Text="If your real-time ratio exceeds this target, the audio tone will completely mute." 
-                               Foreground="Gray" Margin="0,5,0,20"/>
+                    <TextBlock Text="Threshold (uV)" FontWeight="Bold"/><Slider x:Name="ThresholdSlider" Minimum="50" Maximum="500" Value="150" ValueChanged="ThresholdSlider_ValueChanged"/>
+                    <TextBlock x:Name="ThresholdValueText" Text="150 uV"/>
+                    <TextBlock Text="Low Cut (Hz)" FontWeight="Bold" Margin="0,10,0,0"/><Slider x:Name="LowCutSlider" Minimum="0.5" Maximum="5" Value="1" ValueChanged="FilterSlider_ValueChanged"/>
+                    <TextBlock x:Name="LowCutValueText" Text="1.0 Hz"/>
+                    <TextBlock Text="High Cut (Hz)" FontWeight="Bold" Margin="0,10,0,0"/><Slider x:Name="HighCutSlider" Minimum="30" Maximum="50" Value="40" ValueChanged="FilterSlider_ValueChanged"/>
+                    <TextBlock x:Name="HighCutValueText" Text="40.0 Hz"/>
+                    <TextBlock Text="Signal Gain (x)" FontWeight="Bold" Margin="0,10,0,0"/><Slider x:Name="EmuGainSlider" Minimum="0.1" Maximum="10" Value="1.0" ValueChanged="EmuGain_ValueChanged"/>
+                    <TextBlock x:Name="EmuGainValueText" Text="1.0 x"/>
+                    <TextBlock Text="Target Ratio" FontWeight="Bold" Margin="0,10,0,0"/><Slider x:Name="TargetRatioSlider" Minimum="0.1" Maximum="3" Value="1" ValueChanged="TargetRatioSlider_ValueChanged"/>
+                    <TextBlock x:Name="TargetRatioValueText" Text="1.0"/>
                 </StackPanel>
             </TabItem>
-            <!-- Tab 5: External Tools -->
-            <TabItem Header="External Tools">
+
+            <TabItem Header="Tools">
                 <Grid Margin="20">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-                    
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <WrapPanel Grid.Row="0">
+                        <Button x:Name="LaunchEngineButton" Content="Launch Engine" Width="150" Margin="5" Click="LaunchEngine_Click"/>
+                        <Button x:Name="LaunchEmulatorButton" Content="Launch Emulator" Width="150" Margin="5" Click="LaunchEmulator_Click"/>
+                        <Button x:Name="KillPythonButton" Content="Kill All Python" Width="150" Margin="5" Click="KillPython_Click" Background="#FFE9967A"/>
+                        <Button x:Name="LaunchBlueMuseButton" Content="Launch BlueMuse" Width="150" Margin="5" Click="LaunchBlueMuse_Click"/>
+                        <Button x:Name="LaunchLabRecorderButton" Content="Launch Recorder" Width="150" Margin="5" Click="LaunchLabRecorder_Click"/>
+                    </WrapPanel>
+                    <TextBox x:Name="ConsoleOutput" Grid.Row="1" IsReadOnly="True" Background="#1e1e1e" Foreground="White" FontFamily="Consolas" VerticalScrollBarVisibility="Auto"/>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Emulator">
+                <Grid Margin="10">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                     <StackPanel Grid.Row="0">
-                        <TextBlock Text="External Application Management" FontSize="20" FontWeight="Bold" Margin="0,0,0,20"/>
-                        <WrapPanel Margin="0,0,0,15">
-                            <Button x:Name="LaunchEngineButton" Content="Launch Python Engine" Width="200" Height="40" Margin="0,0,15,15" Click="LaunchEngine_Click"/>
-                            <Button x:Name="LaunchBlueMuseButton" Content="Launch BlueMuse Stream" Width="200" Height="40" Margin="0,0,15,15" Click="LaunchBlueMuse_Click"/>
-                            <Button x:Name="LaunchLabRecorderButton" Content="Launch LabRecorder" Width="200" Height="40" Margin="0,0,15,15" Click="LaunchLabRecorder_Click"/>
-                        </WrapPanel>
-                        <TextBlock Text="Note: Python Engine outputs will be redirected to the console below." FontStyle="Italic" Foreground="Gray" Margin="0,0,0,10"/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Hz:" VerticalAlignment="Center"/><TextBox x:Name="EmuHzInput" Text="10.0" Width="40" Margin="5,0"/>
+                            <TextBlock Text="uV:" VerticalAlignment="Center"/><TextBox x:Name="EmuAmpInput" Text="20.0" Width="40" Margin="5,0"/>
+                            <Button Content="Add" Click="AddFreq_Click" Width="50" Margin="5,0"/>
+                            <TextBlock Text="Noise:" VerticalAlignment="Center" Margin="10,0,5,0"/><Slider x:Name="EmuNoiseSlider" Minimum="0" Maximum="20" Value="5" Width="100" ValueChanged="EmuNoise_ValueChanged"/>
+                            <Button Content="Clear" Click="ClearEmu_Click" Width="50" Margin="10,0"/>
+                        </StackPanel>
+                        <ListBox x:Name="ActiveFreqsList" Height="60" Margin="0,5">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding DisplayName}" Width="150"/>
+                                        <Button Content="X" Click="RemoveFreq_Click" Tag="{Binding Hz}"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
                     </StackPanel>
-                    
-                    <Border Grid.Row="1" Background="#1e1e1e" CornerRadius="5" Padding="5">
-                        <TextBox x:Name="ConsoleOutput" IsReadOnly="True" Background="Transparent" Foreground="#d4d4d4" FontFamily="Consolas" BorderThickness="0" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap"/>
-                    </Border>
+                    <ScrollViewer Grid.Row="1">
+                        <StackPanel>
+                            <Grid Height="150"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ScottPlot:WpfPlot x:Name="EmuPlotDelta" Grid.Column="0"/><ScottPlot:WpfPlot x:Name="SoftPlotDelta" Grid.Column="1"/></Grid>
+                            <Grid Height="150"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ScottPlot:WpfPlot x:Name="EmuPlotTheta" Grid.Column="0"/><ScottPlot:WpfPlot x:Name="SoftPlotTheta" Grid.Column="1"/></Grid>
+                            <Grid Height="150"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ScottPlot:WpfPlot x:Name="EmuPlotAlpha" Grid.Column="0"/><ScottPlot:WpfPlot x:Name="SoftPlotAlpha" Grid.Column="1"/></Grid>
+                            <Grid Height="150"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ScottPlot:WpfPlot x:Name="EmuPlotBeta" Grid.Column="0"/><ScottPlot:WpfPlot x:Name="SoftPlotBeta" Grid.Column="1"/></Grid>
+                            <Grid Height="150"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ScottPlot:WpfPlot x:Name="EmuPlotGamma" Grid.Column="0"/><ScottPlot:WpfPlot x:Name="SoftPlotGamma" Grid.Column="1"/></Grid>
+                        </StackPanel>
+                    </ScrollViewer>
                 </Grid>
             </TabItem>
         </TabControl>
