@@ -28,4 +28,5 @@ Thumbs.db
 Desktop.ini
 
 # Project Specific
+.backups/
 Assets/Audio/ocean.mp3
