@@ -1,4 +1,4 @@
-# NeuroMemoryStudy V0.1 - Project Journey & Reflection
+# Nate's Neuroanalysis and Neurofeedback App (NNAFA) V0.1 - Project Journey & Reflection
 
 ## 1. Project Overview
 NeuroMemoryStudy is a deterministic neurofeedback platform designed to pair Muse EEG headsets with a real-time signal processing engine and a WPF-based monitoring dashboard. The goal of V0.1 was to establish a functional "Gold Path" from raw EEG ingestion to audio reward modulation.
