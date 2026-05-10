@@ -192,17 +192,46 @@ This section records observed failure modes from previous iterations. These are 
 - Do NOT share memory, globals, or implicit state
 - Do NOT call Python functions directly from C# without API boundary
 
-### 12.8 Undefined system state transitions
-- Do NOT allow state changes without explicit state machine definition
-- Do NOT infer user state from UI behavior
+### 12.9 Folder Sprawl & Repository Hygiene (CRITICAL)
+- **Do NOT allow directory duplication:** In V0.1, files existed in both root (`/PyApp`) and nested (`/src/Backend/PyApp`) paths. This causes agents to fix the "wrong" file, leading to phantom bugs.
+- **Do NOT keep "Scratchpad" clutter:** Root-level scripts like `test_filter2.py` and `engine_output.txt` should be in a `/temp` or `/scratch` folder, never in the core source tree.
+- **Do NOT allow untracked sub-repos:** The `temp_repo/` folder inside the project created recursive git confusion.
+
+### 12.10 Documentation & Context Fragmentation
+- **Do NOT scatter GEMINI.md files:** Having different instructions in `/`, `/docs`, and `/src` leads to conflicting agent behavior.
+- **Do NOT rely on "Shadow Backups":** The folder `backup_20260508` contained a "better" version of the Stage 3 logic than the main `src` folder. This is a failure of version control.
 
 ---
 
-## 13. Final Principle
+## 13. V0.2 Structural Recommendation
+
+To implement the "Strict Spec," the file layout must mirror the logic:
+
+```text
+/project_root
+├── protocols/             # YAML/JSON definitions of NFB sessions
+├── schemas/               # VERSIONED Protobuf/JSON schemas (The Source of Truth)
+├── src/
+│   ├── 01_ingestion/      # LSL / Hardware abstraction
+│   ├── 02_processing/     # Pure Python DSP (Stateless, unit-tested)
+│   ├── 03_bridge/         # The WebSocket/IPC Server
+│   └── 04_frontend/       # C# WPF (Visualization ONLY)
+├── tests/
+│   ├── data/              # Recorded .XDF or .CSV EEG for replays
+│   ├── unit/              # Testing 02_processing
+│   └── contract/          # Validating 01 -> 04 schema compliance
+└── GEMINI.md              # SINGLE source of truth for AI instructions
+```
+
+---
+
+## 14. Final Principle
 
 If a change cannot be:
 - validated by schema
 - reproduced via replay
 - isolated to a single layer
+- correctly located in a non-redundant file path
 
 → It is invalid system design and must be rejected.
+
