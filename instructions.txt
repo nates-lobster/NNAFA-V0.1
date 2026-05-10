@@ -1,0 +1,31 @@
+**Role:** Senior Full-Stack Security Auditor & .NET Architect.
+   **Context:** Analyzing a hybrid system (C# Frontend / Python Backend).
+   **Exclusion Zone:** Ignore /src/backend/bluemuse and /src/backend/labrecorder. These are verified
+   production-grade.
+
+   **Task:** Build a structured "Bug-tionary" of the remaining \src directory. Use deep-trace
+   analysis to find edge cases where the C# UI might desync from the Python logic.
+
+   **Analysis Directives:**
+   1. **C# Frontend (Deep Audit):**
+      - Analyze how DLLs are referenced. Identify "Missing Reference" risks or version mismatches.
+      - Look for unhandled Task/Async exceptions (UI freezing).
+      - Check Win32 API hooks or Interop calls for memory leaks or "hanging" processes.
+   2. **Python Backend (Logic Audit):**
+      - Check for "Type Errors" where Python receives data from C# that it doesn't expect.
+      - Audit any subprocess management or local socket communication between the two stacks.
+   3. **The "Bridge" Edge Cases:** Identify scenarios where the Backend is down but the Frontend
+   assumes it's up, or where data latency causes a race condition.
+
+   **Output Schema (Markdown Table):**
+   | ENTRY_ID | Component | Bug Type | Trigger Condition | Confidence | Urgency | Agent Fix Guidance
+   |
+   | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+   | [FILE]-[001] | [C# or Py] | [e.g. DLL Collision] | [Specific user action/input] | [1-10] |
+   [Low-Crit] | [Specific steps for next AI] |
+
+   **Flags:**
+   - If a C# file relies on a DLL you cannot "read," mark it as [REF_ONLY] and list potential failure
+   points based on the method names being called.
+   - Mark complex multi-file logic loops as [FLAG FOR REVIEW].begin with \src\Backend and move on
+   from there if you finish.

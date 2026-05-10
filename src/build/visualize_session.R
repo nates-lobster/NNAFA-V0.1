@@ -23,6 +23,11 @@ pyxdf <- import("pyxdf")
 file_path <- "C:/Users/Nate/Documents/CurrentStudy/sub-P001/ses-S001/eeg/sub-P001_ses-S001_task-Default_run-001_eeg.xdf"
 
 if (!file.exists(file_path)) {
+  message("Default file not found. Please select an XDF file.")
+  file_path <- file.choose()
+}
+
+if (!file.exists(file_path)) {
   stop("File not found!")
 }
 
@@ -44,19 +49,23 @@ if (is.null(metrics_stream)) {
 }
 
 # Convert to Data Frame
-# pyxdf returns [samples, channels]
 time_series <- metrics_stream$time_series
 timestamps <- metrics_stream$time_stamps
 
-df <- data.frame(
-  Timestamp = timestamps - timestamps[1],
-  Delta = time_series[,1],
-  Theta = time_series[,2],
-  Alpha = time_series[,3],
-  Beta = time_series[,4],
-  Gamma = time_series[,5],
-  Ratio = time_series[,6]
-)
+# Robust channel mapping [BUILD]-[003]
+# Attempt to find labels in the stream description if they exist
+labels <- c("Delta", "Theta", "Alpha", "Beta", "Gamma", "Ratio")
+try({
+  desc_channels <- metrics_stream$info$desc$channels[[1]]$channel
+  if (!is.null(desc_channels)) {
+    labels <- sapply(desc_channels, function(x) x$label[[1]])
+  }
+}, silent = TRUE)
+
+df <- data.frame(Timestamp = timestamps - timestamps[1])
+for (i in 1:min(length(labels), ncol(time_series))) {
+  df[[labels[i]]] <- time_series[, i]
+}
 
 # --- 3. Plot 1: Band Powers Over Time ---
 plot_powers <- df %>%

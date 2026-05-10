@@ -1,6 +1,6 @@
 import numpy as np
 from pylsl import StreamInlet, resolve_byprop, StreamInfo, StreamOutlet, local_clock
-from scipy.signal import firwin, iirnotch, lfilter, welch
+from scipy.signal import firwin, iirnotch, lfilter, lfilter_zi, welch
 from scipy.signal.windows import hann
 import time
 import asyncio
@@ -26,6 +26,7 @@ TP10_INDEX = 3
 INDEX_MAP = {"tp9": 0, "af7": 1, "af8": 2, "tp10": 3}
 
 # Global state
+last_valid_metrics = None
 connected_clients = set()
 ARTIFACT_THRESHOLD = 150.0
 LOW_CUT = 1.0
@@ -56,19 +57,26 @@ def create_fir_filters(fs):
     band_taps = {}
     for name, (l, h) in BAND_LIMITS.items():
         band_taps[name] = firwin(FIR_TAPS, [l, h], pass_zero=False, fs=fs, window='blackman')
-    return (b_notch, a_notch), taps_main, band_taps
+    
+    # Initialize zi for smooth transitions
+    # [FIX] zi_notch must be expanded to match the number of channels (4)
+    zi_notch_single = lfilter_zi(b_notch, a_notch)
+    zi_notch = np.tile(zi_notch_single[:, None], (1, CHANNELS))
+    
+    zi_main = [lfilter_zi(taps_main, 1.0) for _ in range(CHANNELS)]
+    zi_bands = {name: lfilter_zi(taps, 1.0) for name, taps in band_taps.items()}
+    
+    return (b_notch, a_notch, zi_notch), (taps_main, zi_main), (band_taps, zi_bands)
 
 def is_artifact_free(data, threshold=150.0):
+    # Scan only the newest 0.5s chunk
     chunk = data[-128:]
-    for idx in range(CHANNELS):
-        ptp = np.ptp(chunk[:, idx])
-        if ptp < 0.1: return False, ptp, "FLATLINE"
-    
+    if chunk.shape[0] < 128: return True, 0.0
     for idx in [AF7_INDEX, AF8_INDEX]:
         ptp = np.ptp(chunk[:, idx])
-        if ptp > threshold: return False, ptp, "ARTIFACT"
-            
-    return True, 0.0, "OK"
+        if ptp > threshold:
+            return False, ptp
+    return True, 0.0
 
 smoothed_bands = { "delta": 0, "theta": 0, "alpha": 0, "beta": 0, "gamma": 0 }
 SMOOTHING_FACTOR = 0.1 
@@ -76,9 +84,12 @@ SMOOTHING_FACTOR = 0.1
 def calculate_bands(freqs, psd):
     global smoothed_bands
     bands = {}
+    # Fallback for trapezoid/trapz based on numpy version
+    trap_func = getattr(np, 'trapezoid', getattr(np, 'trapz', None))
+    
     for band, (low, high) in BAND_LIMITS.items():
         idx = np.logical_and(freqs >= low, freqs < high)
-        bands[band] = float(np.trapezoid(psd[idx], freqs[idx])) if any(idx) else 0.0
+        bands[band] = float(trap_func(psd[idx], freqs[idx])) if any(idx) else 0.0
     for band in bands:
         if smoothed_bands[band] == 0:
             smoothed_bands[band] = bands[band]
@@ -95,22 +106,33 @@ async def websocket_handler(websocket):
                 data = json.loads(message)
                 if data.get("type") == "config":
                     if "threshold" in data: ARTIFACT_THRESHOLD = float(data["threshold"])
-                    if "low_cut" in data: LOW_CUT = float(data["low_cut"]); CONFIG_CHANGED = True
-                    if "high_cut" in data: HIGH_CUT = float(data["high_cut"]); CONFIG_CHANGED = True
-                    if "global_gain" in data: GLOBAL_GAIN = float(data["global_gain"])
+                    if "low_cut" in data: 
+                        val = float(data["low_cut"])
+                        if val != LOW_CUT: LOW_CUT = val; CONFIG_CHANGED = True
+                    if "high_cut" in data: 
+                        val = float(data["high_cut"])
+                        if val != HIGH_CUT: HIGH_CUT = val; CONFIG_CHANGED = True
+                if data.get("command") == "set_gain":
+                    GLOBAL_GAIN = float(data.get("value", 1.0))
+                    log(f"Global Gain set to: {GLOBAL_GAIN}")
                 if data.get("type") == "quit":
                     log("Quit command received.")
+                    await broadcast({"type": "status", "status": "SHUTDOWN"})
+                    await asyncio.sleep(0.2)
                     sys.exit(0)
-            except Exception as e: log(f"Config error: {e}")
-    except: pass
+            except (ValueError, TypeError, json.JSONDecodeError) as e: 
+                log(f"Config validation error: {e}")
+            except Exception as e: 
+                log(f"Unexpected config error: {e}")
     finally:
         connected_clients.remove(websocket)
 
 async def broadcast(message):
     if connected_clients:
-        msg = json.dumps(message)
-        tasks = [asyncio.create_task(ws.send(msg)) for ws in connected_clients]
-        if tasks: await asyncio.wait(tasks, timeout=0.05)
+        try:
+            websockets.broadcast(connected_clients, json.dumps(message))
+        except Exception as e:
+            log(f"Broadcast error: {e}")
 
 def clean_dict(d):
     for k, v in d.items():
@@ -121,151 +143,149 @@ def clean_dict(d):
     return d
 
 async def acquisition_loop():
-    global CONFIG_CHANGED
+    global last_valid_metrics, CONFIG_CHANGED
     while True:
-        log("Searching for LSL stream...")
+        log("Searching for LSL stream (Prioritizing name='Muse')...")
         await broadcast({"type": "status", "status": "SEARCHING"})
         
-        streams = resolve_byprop('name', 'Muse', timeout=1)
-        if not streams: streams = resolve_byprop('type', 'EEG', timeout=1)
+        streams = resolve_byprop('name', 'Muse', timeout=2)
+        if not streams:
+            streams = resolve_byprop('type', 'EEG', timeout=1)
         
         if not streams:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
             continue
 
         try:
-            inlet = StreamInlet(streams[0], recover=False)
-            log(f"Connected to {streams[0].name()}")
+            inlet = StreamInlet(streams[0], max_buflen=2) # [ENGINE]-[001]
+            log(f"SUCCESS: Connected to LSL Stream '{streams[0].name()}' ({streams[0].type()})")
             await broadcast({"type": "status", "status": "CONNECTED"})
             
             data_buffer = np.zeros((BUFFER_SAMPLES, CHANNELS))
-            notch_coeffs, fir_kernel, band_kernels = create_fir_filters(FS)
-            total_samples = 0
-            stride = 25 
+            notch_cfg, fir_cfg, band_cfg = create_fir_filters(FS)
+            
+            # Setup initial zi states
+            zi_notch = notch_cfg[2]
+            zi_fir = fir_cfg[1]
+            zi_bands = {name: band_cfg[1][name] for name in band_cfg[0].keys()}
+
+            total_samples_collected = 0
+            signal_stride = 25 
             smoothed_psd = None
             last_sample_time = time.time()
 
             while True:
                 if CONFIG_CHANGED:
-                    notch_coeffs, fir_kernel, band_kernels = create_fir_filters(FS)
+                    notch_cfg, fir_cfg, band_cfg = create_fir_filters(FS)
+                    zi_notch = notch_cfg[2]
+                    zi_fir = fir_cfg[1]
+                    zi_bands = {name: band_cfg[1][name] for name in band_cfg[0].keys()}
                     CONFIG_CHANGED = False
                 
-                sample, timestamp = inlet.pull_sample(timeout=0.005)
+                # [ENGINE]-[001] Watchdog
+                if time.time() - last_sample_time > 2.0:
+                    log("WATCHDOG: LSL stream timed out. Resetting...")
+                    break
+
+                sample, timestamp = inlet.pull_sample(timeout=0.01)
                 if sample:
+                    # [ENGINE]-[002] Root Cause fix: check NaNs before processing
+                    if not np.all(np.isfinite(sample)):
+                        log("WARNING: NaN/Inf detected in LSL sample. Skipping.")
+                        continue
+
                     last_sample_time = time.time()
                     data_buffer = np.roll(data_buffer, -1, axis=0)
                     data_buffer[-1, :] = sample[:CHANNELS]
-                    total_samples += 1
+                    total_samples_collected += 1
 
-                    if total_samples % stride == 0:
-                        v_len = min(total_samples, BUFFER_SAMPLES)
+                    if total_samples_collected >= BUFFER_SAMPLES and total_samples_collected % signal_stride == 0:
+                        raw_chunk = data_buffer[-BUFFER_SAMPLES:, :]
+                        normalized = raw_chunk - np.mean(raw_chunk, axis=0)
                         
-                        # Stage 1: Raw (DC Removed)
-                        raw = data_buffer[-v_len:, :] - np.mean(data_buffer[-v_len:, :], axis=0)
+                        # [ENGINE]-[003] Stateful filtering
+                        notched, zi_notch = lfilter(notch_cfg[0], notch_cfg[1], normalized, axis=0, zi=zi_notch)
                         
-                        # Stage 2: Filtered
-                        notched = lfilter(notch_coeffs[0], notch_coeffs[1], raw, axis=0)
-                        filt = np.zeros_like(notched)
-                        for i in range(CHANNELS): filt[:, i] = lfilter(fir_kernel, 1.0, notched[:, i])
+                        filtered = np.zeros_like(notched)
+                        for i in range(CHANNELS):
+                            filtered[:, i], zi_fir[i] = lfilter(fir_cfg[0], 1.0, notched[:, i], zi=zi_fir[i])
                         
-                        # Apply GLOBAL_GAIN
-                        filt_g = filt * GLOBAL_GAIN
+                        is_clean, max_ptp = is_artifact_free(filtered, threshold=ARTIFACT_THRESHOLD)
+                        cleaned_signal = filtered * GLOBAL_GAIN
                         
-                        # Status Logic & Honesty Check
-                        is_clean, ptp, quality = is_artifact_free(filt_g, threshold=ARTIFACT_THRESHOLD)
+                        all_psds = []
+                        h_win = hann(BUFFER_SAMPLES)
+                        for i in range(CHANNELS):
+                            windowed_data = cleaned_signal[:, i] * h_win
+                            freqs, psd = welch(windowed_data, FS, nperseg=FS*2)
+                            all_psds.append(psd)
+                        avg_psd = np.mean(all_psds, axis=0)
                         
-                        # Determine current status
-                        if v_len < BUFFER_SAMPLES:
-                            current_status = "INITIALIZING"
-                        else:
-                            current_status = quality # "OK", "ARTIFACT", or "FLATLINE"
+                        if smoothed_psd is None: smoothed_psd = avg_psd
+                        else: smoothed_psd = (avg_psd * SMOOTHING_FACTOR) + (smoothed_psd * (1.0 - SMOOTHING_FACTOR))
 
-                        # Build telemetry basics
-                        payload = {
-                            "type": "telemetry", 
-                            "status": current_status,
-                            "ptp": ptp,
-                            "new_raw_af7": raw[-stride:, AF7_INDEX].tolist(),
-                            "new_filt_af7": filt_g[-stride:, AF7_INDEX].tolist()
-                        }
-
-                        # HONESTY: If not OK, explicitly clear processed metrics
-                        if current_status == "OK":
-                            # PSD / Bands
-                            h_win = hann(v_len)
-                            all_psds = []
-                            for i in range(CHANNELS):
-                                f_tmp, p_tmp = welch(filt_g[:, i] * h_win, FS, nperseg=v_len)
-                                all_psds.append(p_tmp)
-                            avg_psd = np.mean(all_psds, axis=0)
-                            if smoothed_psd is None: smoothed_psd = avg_psd
-                            else: smoothed_psd = (avg_psd * SMOOTHING_FACTOR) + (smoothed_psd * (1.0 - SMOOTHING_FACTOR))
-                            
-                            bands = calculate_bands(f_tmp, smoothed_psd)
-                            ratio = bands["alpha"] / bands["beta"] if bands["beta"] > 0 else 0
-                            
-                            target_f = np.linspace(0, 40, stride)
-                            psd_list = np.interp(target_f, f_tmp, smoothed_psd).tolist()
-                            freqs_list = target_f.tolist()
-
-                            payload.update({
-                                "ratio": ratio, **bands,
-                                "fft_freqs": freqs_list, "fft_psd": psd_list,
-                                "new_denoised_af7": filt_g[-stride:, AF7_INDEX].tolist()
-                            })
-                            
-                            waves = {}
-                            for name, kernel in band_kernels.items():
-                                iso = lfilter(kernel, 1.0, filt_g[:, AF7_INDEX])
-                                waves[name] = (iso[-stride:] if len(iso) >= stride else np.pad(iso, (stride-len(iso), 0))).tolist()
-                            payload["waves"] = waves
-
-                        else:
-                            # Send zeros for metrics if signal is bad
-                            payload.update({
-                                "ratio": 0, "delta":0, "theta":0, "alpha":0, "beta":0, "gamma":0,
-                                "fft_freqs": [0.0]*stride, "fft_psd": [0.0]*stride,
-                                "new_denoised_af7": [0.0]*stride,
-                                "waves": {b: [0.0]*stride for b in BAND_LIMITS}
-                            })
-
-                        # Other channels for raw view
-                        for n, idx in INDEX_MAP.items():
-                            if n != "af7":
-                                payload[f"new_raw_{n}"] = raw[-stride:, idx].tolist()
-                                payload[f"new_filt_{n}"] = filt_g[-stride:, idx].tolist()
-
-                        await broadcast(clean_dict(payload))
-                else:
-                    if time.time() - last_sample_time > 0.7: 
-                        log("WATCHDOG: Stream timed out.")
+                        bands = calculate_bands(freqs, smoothed_psd)
+                        ratio = bands["alpha"] / bands["beta"] if bands["beta"] > 0 else 0
+                        now = local_clock()
+                        metrics_outlet.push_sample([bands["delta"], bands["theta"], bands["alpha"], bands["beta"], bands["gamma"], ratio], timestamp=now)
                         
-                        # Broadcast zeroes explicitly to clear frontend plots
-                        stride = 25
+                        isolated_waves = {}
+                        for name, taps in band_cfg[0].items():
+                            iso, zi_bands[name] = lfilter(taps, 1.0, normalized[:, AF7_INDEX], zi=zi_bands[name])
+                            isolated_waves[name] = (iso[-signal_stride:] * GLOBAL_GAIN).tolist()
+
                         payload = {
                             "type": "telemetry",
-                            "status": "DISCONNECTED",
-                            "ptp": 0.0,
-                            "ratio": 0.0, "delta":0, "theta":0, "alpha":0, "beta":0, "gamma":0,
-                            "fft_freqs": [0.0]*stride, "fft_psd": [0.0]*stride,
-                            "waves": {b: [0.0]*stride for b in BAND_LIMITS}
+                            "status": "OK" if is_clean else "HOLD" if last_valid_metrics else "DIRTY",
+                            "ptp": max_ptp,
+                            "delta": bands["delta"], "theta": bands["theta"], "alpha": bands["alpha"], "beta": bands["beta"], "gamma": bands["gamma"],
+                            "ratio": ratio,
+                            "new_raw_tp9": normalized[-signal_stride:, TP9_INDEX].tolist(),
+                            "new_filt_tp9": cleaned_signal[-signal_stride:, TP9_INDEX].tolist(),
+                            "new_raw_af7": normalized[-signal_stride:, AF7_INDEX].tolist(),
+                            "new_filt_af7": cleaned_signal[-signal_stride:, AF7_INDEX].tolist(),
+                            "new_denoised_af7": cleaned_signal[-signal_stride:, AF7_INDEX].tolist() if is_clean else [0.0] * signal_stride,
+                            "new_raw_af8": normalized[-signal_stride:, AF8_INDEX].tolist(),
+                            "new_filt_af8": cleaned_signal[-signal_stride:, AF8_INDEX].tolist(),
+                            "new_raw_tp10": normalized[-signal_stride:, TP10_INDEX].tolist(),
+                            "new_filt_tp10": cleaned_signal[-signal_stride:, TP10_INDEX].tolist(),
+                            "waves": isolated_waves,
+                            "fft_freqs": freqs[freqs <= 40].tolist(),
+                            "fft_psd": smoothed_psd[freqs <= 40].tolist()
                         }
-                        for n in INDEX_MAP.keys():
-                            payload[f"new_raw_{n}"] = [0.0]*stride
-                            payload[f"new_filt_{n}"] = [0.0]*stride
-                            if n == "af7":
-                                payload["new_denoised_af7"] = [0.0]*stride
-                                
-                        await broadcast(payload)
-                        await broadcast({"type": "status", "status": "DISCONNECTED"})
-                        break
+
+                        if is_clean:
+                            marker_outlet.push_sample(["OK"], timestamp=now)
+                            last_valid_metrics = payload
+                            await broadcast(clean_dict(payload))
+                        elif last_valid_metrics:
+                            marker_outlet.push_sample(["HOLD"], timestamp=now)
+                            hold_payload = dict(last_valid_metrics)
+                            hold_payload["status"] = "HOLD"
+                            # Still send fresh raw/filt data
+                            for ch_name, ch_idx in INDEX_MAP.items():
+                                hold_payload[f"new_raw_{ch_name}"] = normalized[-signal_stride:, ch_idx].tolist()
+                                hold_payload[f"new_filt_{ch_name}"] = cleaned_signal[-signal_stride:, ch_idx].tolist()
+                            hold_payload["new_denoised_af7"] = [0.0] * signal_stride
+                            await broadcast(clean_dict(hold_payload))
+                        else:
+                            marker_outlet.push_sample(["DIRTY"], timestamp=now)
+                            await broadcast(clean_dict(payload))
+
                 await asyncio.sleep(0.001)
-        except Exception as e: log(f"Err: {e}"); await asyncio.sleep(1)
+        except Exception as e:
+            log(f"Acquisition Error: {e}. Retrying search...")
+            await broadcast({"type": "status", "status": "SEARCHING"})
+            await asyncio.sleep(2)
+        finally:
+            try: inlet.close_stream()
+            except: pass
 
 async def main():
-    async with websockets.serve(websocket_handler, "127.0.0.1", 8765):
-        await acquisition_loop()
+    log("--- NeuroMemoryStudy Backend Engine (Gold v2) ---")
+    server = await websockets.serve(websocket_handler, "127.0.0.1", 8765)
+    await acquisition_loop()
 
 if __name__ == "__main__":
     try: asyncio.run(main())
-    except: pass
+    except KeyboardInterrupt: log("\nEngine shutting down.")

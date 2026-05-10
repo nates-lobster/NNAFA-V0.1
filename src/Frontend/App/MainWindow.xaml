@@ -51,7 +51,7 @@
         </StackPanel>
 
         <!-- Main Content -->
-        <TabControl Grid.Row="1" Margin="5">
+        <TabControl x:Name="MainTabControl" Grid.Row="1" Margin="5">
             
             <!-- Tab 1: Live Signals -->
             <TabItem Header="Live Signals">
@@ -201,7 +201,7 @@
                             <TextBlock Text="Hz:" VerticalAlignment="Center"/><TextBox x:Name="EmuHzInput" Text="10.0" Width="40" Margin="5,0"/>
                             <TextBlock Text="uV:" VerticalAlignment="Center"/><TextBox x:Name="EmuAmpInput" Text="20.0" Width="40" Margin="5,0"/>
                             <Button Content="Add" Click="AddFreq_Click" Width="50" Margin="5,0"/>
-                            <TextBlock Text="Noise:" VerticalAlignment="Center" Margin="10,0,5,0"/><Slider x:Name="EmuNoiseSlider" Minimum="0" Maximum="100" Value="0" Width="100" ValueChanged="EmuNoise_ValueChanged"/>
+                            <TextBlock Text="Noise:" VerticalAlignment="Center" Margin="10,0,5,0"/><Slider x:Name="EmuNoiseSlider" Minimum="0" Maximum="50" Value="0" Width="100" ValueChanged="EmuNoise_ValueChanged"/>
                             <Button Content="Clear" Click="ClearEmu_Click" Width="50" Margin="10,0"/>
                         </StackPanel>
                         <ListBox x:Name="ActiveFreqsList" Height="60" Margin="0,5">

@@ -64,6 +64,7 @@ namespace NeurofeedbackApp
         private WaveOutEvent? _waveOut;
         private SignalGenerator? _signalGenerator;
         private VolumeSampleProvider? _volumeProvider;
+        private AudioFileReader? _audioReader;
         private double _targetRatio = 1.0;
         private float _targetVolume = 0.0f;
         private float _masterVolume = 0.5f;
@@ -73,6 +74,7 @@ namespace NeurofeedbackApp
         private DateTime _calibrationStartTime;
         private System.Windows.Threading.DispatcherTimer? _calibrationTimer;
         private System.Collections.Generic.List<double> _calibrationRatios = new System.Collections.Generic.List<double>();
+        private bool _canClose = false;
 
         public MainWindow()
         {
@@ -144,6 +146,7 @@ namespace NeurofeedbackApp
                 PipelinePlotRaw.Plot.Title("Stage 1: Raw Signal (uV)");
                 _pipeRaw = PipelinePlotRaw.Plot.Add.DataStreamer(1000);
                 _pipeRaw.Color = ScottPlot.Colors.Gray;
+                _pipeRaw.ManageAxisLimits = false;
                 PipelinePlotRaw.Plot.Axes.SetLimitsY(-200, 200);
                 PipelinePlotRaw.Plot.XLabel("Samples");
                 PipelinePlotRaw.Plot.YLabel("Amplitude (uV)");
@@ -151,6 +154,7 @@ namespace NeurofeedbackApp
                 PipelinePlotFiltered.Plot.Title("Stage 2: Filtered (1-40Hz + Notch)");
                 _pipeFilt = PipelinePlotFiltered.Plot.Add.DataStreamer(1000);
                 _pipeFilt.Color = ScottPlot.Colors.Blue;
+                _pipeFilt.ManageAxisLimits = false;
                 PipelinePlotFiltered.Plot.Axes.SetLimitsY(-100, 100);
                 PipelinePlotFiltered.Plot.XLabel("Samples");
                 PipelinePlotFiltered.Plot.YLabel("Amplitude (uV)");
@@ -158,6 +162,7 @@ namespace NeurofeedbackApp
                 PipelinePlotDenoised.Plot.Title("Stage 3: Denoised (Artifact Rejection)");
                 _pipeDen = PipelinePlotDenoised.Plot.Add.DataStreamer(1000);
                 _pipeDen.Color = ScottPlot.Colors.Green;
+                _pipeDen.ManageAxisLimits = false;
                 PipelinePlotDenoised.Plot.Axes.SetLimitsY(-100, 100);
                 PipelinePlotDenoised.Plot.XLabel("Samples");
                 PipelinePlotDenoised.Plot.YLabel("Amplitude (uV)");
@@ -235,15 +240,41 @@ namespace NeurofeedbackApp
             {
                 try
                 {
-                    Dispatcher.Invoke(() => StatusText.Text = "Connecting...");
+                    Dispatcher.Invoke(() => {
+                        StatusText.Text = "Connecting...";
+                        StatusIndicator.Background = Brushes.Gray;
+                    });
+                    
+                    if (_webSocket != null) {
+                        try { _webSocket.Dispose(); } catch { }
+                    }
                     _webSocket = new ClientWebSocket();
+                    
                     await _webSocket.ConnectAsync(new Uri("ws://127.0.0.1:8765"), _cts.Token);
                     Dispatcher.Invoke(() => StatusText.Text = "Connected");
                     await SendConfigToEngine();
                     await ReceiveDataLoopAsync();
                 }
-                catch (Exception) { Dispatcher.Invoke(() => { StatusText.Text = "Searching..."; StatusIndicator.Background = Brushes.Gray; }); await Task.Delay(5000); }
+                catch (Exception) { 
+                    Dispatcher.Invoke(() => { 
+                        StatusText.Text = "Searching..."; 
+                        StatusIndicator.Background = Brushes.Gray;
+                        ResetUIState();
+                    }); 
+                    await Task.Delay(5000); 
+                }
             }
+        }
+
+        private void ResetUIState()
+        {
+            _currentDelta = 0; _currentTheta = 0; _currentAlpha = 0; _currentBeta = 0; _currentGamma = 0;
+            Dispatcher.Invoke(() => {
+                DeltaText.Text = "0.00"; ThetaText.Text = "0.00"; AlphaText.Text = "0.00"; BetaText.Text = "0.00"; GammaText.Text = "0.00";
+                RatioText.Text = "0.00";
+                if (FftRatioText != null) FftRatioText.Text = "0.00";
+                if (NfRatioText != null) NfRatioText.Text = "0.00";
+            });
         }
 
         private async Task ConnectToEmulatorAsync()
@@ -252,6 +283,9 @@ namespace NeurofeedbackApp
             {
                 try
                 {
+                    if (_emuSocket != null) {
+                        try { _emuSocket.Dispose(); } catch { }
+                    }
                     _emuSocket = new ClientWebSocket();
                     await _emuSocket.ConnectAsync(new Uri("ws://127.0.0.1:8766"), _cts.Token);
                     AppendToConsole("Emulator Connected.");
@@ -260,7 +294,7 @@ namespace NeurofeedbackApp
                     lock(_oscLock) { snapshot = _activeOscillators.ToArray(); }
                     foreach (var osc in snapshot) await SendEmuCommand("add_freq", osc.Hz, osc.Amp);
                     await SendEmuCommand("set_noise", 0, noise);
-                    while (_emuSocket.State == WebSocketState.Open) await Task.Delay(1000);
+                    while (_emuSocket.State == WebSocketState.Open && !_cts.IsCancellationRequested) await Task.Delay(1000);
                 }
                 catch (Exception) { await Task.Delay(3000); }
             }
@@ -342,11 +376,21 @@ namespace NeurofeedbackApp
         }
 
         private double _emuTime = 0;
+        private DateTime _lastUiUpdate = DateTime.MinValue;
         private void UpdateUI(JsonElement data)
         {
+            // [NEW-001] Increment emulator clock for every telemetry packet received to prevent drift,
+            // even if the UI refresh is skipped due to throttling.
+            string status = data.TryGetProperty("status", out var s) ? s.GetString() ?? "OK" : "OK";
+            if (status == "OK" && data.TryGetProperty("waves", out _)) {
+                _emuTime += (25.0 / 256.0); 
+            }
+
+            if ((DateTime.Now - _lastUiUpdate).TotalMilliseconds < 50) return; // Throttle to 20Hz
+            _lastUiUpdate = DateTime.Now;
+
             try {
                 // Background thread: Parse data and prepare UI updates
-                string status = data.TryGetProperty("status", out var s) ? s.GetString() ?? "OK" : "OK";
                 double delta = data.TryGetProperty("delta", out var d) ? d.GetDouble() : 0;
                 double theta = data.TryGetProperty("theta", out var t) ? t.GetDouble() : 0;
                 double alpha = data.TryGetProperty("alpha", out var a) ? a.GetDouble() : 0;
@@ -364,6 +408,9 @@ namespace NeurofeedbackApp
                 var emuPoints = new System.Collections.Generic.Dictionary<string, double[]>();
                 var softPoints = new System.Collections.Generic.Dictionary<string, double[]>();
                 
+                int selectedIndex = 0;
+                Dispatcher.Invoke(() => selectedIndex = MainTabControl.SelectedIndex);
+
                 if (data.TryGetProperty("waves", out var waves)) {
                     double t_frame = _emuTime; // Sync all bands to the same start time
                     PrepareBandData("delta", waves, 1, 4, oscSnapshot, t_frame, emuPoints, softPoints);
@@ -377,9 +424,9 @@ namespace NeurofeedbackApp
                 // Dispatch to UI thread for component updates
                 Dispatcher.Invoke(() =>
                 {
-                    StatusIndicator.Background = (status == "OK" || status == "CONNECTED") ? Brushes.LimeGreen : (status == "INITIALIZING" ? Brushes.Yellow : Brushes.Red);
+                    StatusIndicator.Background = (status == "OK" || status == "CONNECTED") ? Brushes.LimeGreen : (status == "INITIALIZING" ? Brushes.Yellow : (status == "SEARCHING" ? Brushes.Gray : Brushes.Red));
                     
-                    if (status != "OK") {
+                    if (status != "OK" && status != "HOLD") {
                          // Clear metrics if the stream is dead
                         _currentDelta = 0; _currentTheta = 0; _currentAlpha = 0; _currentBeta = 0; _currentGamma = 0;
                     } else {
@@ -391,36 +438,56 @@ namespace NeurofeedbackApp
                     CalculateRatio();
 
                     if (status != "SEARCHING") {
-                        ProcessEegData(data, "af7", _rawStreamAF7, _filtStreamAF7); ProcessEegData(data, "af8", _rawStreamAF8, _filtStreamAF8); ProcessEegData(data, "tp9", _rawStreamTP9, _filtStreamTP9); ProcessEegData(data, "tp10", _rawStreamTP10, _filtStreamTP10);
+                        if (selectedIndex == 0) {
+                            ProcessEegData(data, "af7", _rawStreamAF7, _filtStreamAF7); ProcessEegData(data, "af8", _rawStreamAF8, _filtStreamAF8); ProcessEegData(data, "tp9", _rawStreamTP9, _filtStreamTP9); ProcessEegData(data, "tp10", _rawStreamTP10, _filtStreamTP10);
+                        }
                         
-                        ApplyBandData("delta", _softDelta, _emuDelta, emuPoints, softPoints);
-                        ApplyBandData("theta", _softTheta, _emuTheta, emuPoints, softPoints);
-                        ApplyBandData("alpha", _softAlpha, _emuAlpha, emuPoints, softPoints);
-                        ApplyBandData("beta", _softBeta, _emuBeta, emuPoints, softPoints);
-                        ApplyBandData("gamma", _softGamma, _emuGamma, emuPoints, softPoints);
+                        if (selectedIndex == 6) {
+                            ApplyBandData("delta", _softDelta, _emuDelta, emuPoints, softPoints);
+                            ApplyBandData("theta", _softTheta, _emuTheta, emuPoints, softPoints);
+                            ApplyBandData("alpha", _softAlpha, _emuAlpha, emuPoints, softPoints);
+                            ApplyBandData("beta", _softBeta, _emuBeta, emuPoints, softPoints);
+                            ApplyBandData("gamma", _softGamma, _emuGamma, emuPoints, softPoints);
+                        }
 
-                        _deltaTrend?.Add(_currentDelta); _thetaTrend?.Add(_currentTheta); _alphaTrend?.Add(_currentAlpha); _betaTrend?.Add(_currentBeta); _gammaTrend?.Add(_currentGamma);
+                        if (selectedIndex == 2) {
+                            _deltaTrend?.Add(_currentDelta); _thetaTrend?.Add(_currentTheta); _alphaTrend?.Add(_currentAlpha); _betaTrend?.Add(_currentBeta); _gammaTrend?.Add(_currentGamma);
+                        }
 
-                        if (data.TryGetProperty("new_raw_af7", out var nr)) foreach (var v in nr.EnumerateArray()) _pipeRaw?.Add(v.GetDouble());
-                        if (data.TryGetProperty("new_filt_af7", out var nf)) foreach (var v in nf.EnumerateArray()) _pipeFilt?.Add(v.GetDouble());
-                        if (data.TryGetProperty("new_denoised_af7", out var nd)) foreach (var v in nd.EnumerateArray()) _pipeDen?.Add(v.GetDouble());
+                        if (selectedIndex == 1) {
+                            if (data.TryGetProperty("new_raw_af7", out var nr)) foreach (var v in nr.EnumerateArray()) _pipeRaw?.Add(v.GetDouble());
+                            if (data.TryGetProperty("new_filt_af7", out var nf)) foreach (var v in nf.EnumerateArray()) _pipeFilt?.Add(v.GetDouble());
+                            if (data.TryGetProperty("new_denoised_af7", out var nd)) foreach (var v in nd.EnumerateArray()) _pipeDen?.Add(v.GetDouble());
+                        }
                     }
                     
                     if (fftFreqs != null && fftPsd != null) {
-                        if (_fftScatter != null) { FftPlot.Plot.Remove(_fftScatter); }
-                        _fftScatter = FftPlot.Plot.Add.ScatterLine(fftFreqs, fftPsd); _fftScatter.Color = ScottPlot.Colors.Purple;
-                        if (_nfFftScatter != null) { NfFftPlot.Plot.Remove(_nfFftScatter); }
-                        _nfFftScatter = NfFftPlot.Plot.Add.ScatterLine(fftFreqs, fftPsd); _nfFftScatter.Color = ScottPlot.Colors.Purple;
-                        if (_pipeFft != null) { PipelinePlotFft.Plot.Remove(_pipeFft); }
-                        _pipeFft = PipelinePlotFft.Plot.Add.ScatterLine(fftFreqs, fftPsd); _pipeFft.Color = ScottPlot.Colors.Purple;
+                        if (selectedIndex == 0) {
+                            if (_fftScatter != null) { FftPlot.Plot.Remove(_fftScatter); }
+                            _fftScatter = FftPlot.Plot.Add.ScatterLine(fftFreqs, fftPsd); _fftScatter.Color = ScottPlot.Colors.Purple;
+                            FftPlot.Refresh();
+                        }
+                        if (selectedIndex == 3) {
+                            if (_nfFftScatter != null) { NfFftPlot.Plot.Remove(_nfFftScatter); }
+                            _nfFftScatter = NfFftPlot.Plot.Add.ScatterLine(fftFreqs, fftPsd); _nfFftScatter.Color = ScottPlot.Colors.Purple;
+                            NfFftPlot.Refresh();
+                        }
+                        if (selectedIndex == 1) {
+                            if (_pipeFft != null) { PipelinePlotFft.Plot.Remove(_pipeFft); }
+                            _pipeFft = PipelinePlotFft.Plot.Add.ScatterLine(fftFreqs, fftPsd); _pipeFft.Color = ScottPlot.Colors.Purple;
+                            PipelinePlotFft.Refresh();
+                        }
                     }
 
-                    // Refresh all plots once per frame
-                    EegPlotAF7.Refresh(); EegPlotAF8.Refresh(); EegPlotTP9.Refresh(); EegPlotTP10.Refresh();
-                    EmuPlotDelta.Refresh(); SoftPlotDelta.Refresh(); EmuPlotTheta.Refresh(); SoftPlotTheta.Refresh();
-                    EmuPlotAlpha.Refresh(); SoftPlotAlpha.Refresh(); EmuPlotBeta.Refresh(); SoftPlotBeta.Refresh();
-                    EmuPlotGamma.Refresh(); SoftPlotGamma.Refresh();
-                    TrendPlot.Refresh(); FftPlot.Refresh(); NfFftPlot.Refresh(); PipelinePlotRaw.Refresh(); PipelinePlotFiltered.Refresh(); PipelinePlotDenoised.Refresh(); PipelinePlotFft.Refresh();
+                    // Refresh specific plots based on tab
+                    if (selectedIndex == 0) { EegPlotAF7.Refresh(); EegPlotAF8.Refresh(); EegPlotTP9.Refresh(); EegPlotTP10.Refresh(); }
+                    else if (selectedIndex == 6) {
+                        EmuPlotDelta.Refresh(); SoftPlotDelta.Refresh(); EmuPlotTheta.Refresh(); SoftPlotTheta.Refresh();
+                        EmuPlotAlpha.Refresh(); SoftPlotAlpha.Refresh(); EmuPlotBeta.Refresh(); SoftPlotBeta.Refresh();
+                        EmuPlotGamma.Refresh(); SoftPlotGamma.Refresh();
+                    }
+                    else if (selectedIndex == 2) { TrendPlot.Refresh(); }
+                    else if (selectedIndex == 1) { PipelinePlotRaw.Refresh(); PipelinePlotFiltered.Refresh(); PipelinePlotDenoised.Refresh(); }
                 });
             } catch (Exception ex) { Debug.WriteLine("UI Update Error: " + ex.Message); }
         }
@@ -465,7 +532,12 @@ namespace NeurofeedbackApp
         }
 
         private double GetBandValue(string b) => b switch { "Delta" => _currentDelta, "Theta" => _currentTheta, "Alpha" => _currentAlpha, "Beta" => _currentBeta, "Gamma" => _currentGamma, _ => 0 };
-        private void UpdateNeurofeedbackVolume(double r) { if (_volumeProvider == null) return; float v = (float)(1.0 - (r / _targetRatio)) * _masterVolume; _targetVolume = v < 0 ? 0 : v > 1 ? 1 : v; }
+        private void UpdateNeurofeedbackVolume(double r) { 
+            if (_volumeProvider == null) return; 
+            double target = _targetRatio > 0 ? _targetRatio : 0.1;
+            float v = (float)(1.0 - (r / target)) * _masterVolume; 
+            _targetVolume = v < 0 ? 0 : v > 1 ? 1 : v; 
+        }
         private void RatioCombo_SelectionChanged(object s, SelectionChangedEventArgs e) => CalculateRatio();
         private async void ThresholdSlider_ValueChanged(object s, RoutedPropertyChangedEventArgs<double> e) { if (!IsLoaded || ThresholdValueText == null) return; ThresholdValueText.Text = $"{Math.Round(e.NewValue)} uV"; await SendConfigToEngine(); }
         private void TargetRatioSlider_ValueChanged(object s, RoutedPropertyChangedEventArgs<double> e) { if (!IsLoaded || TargetRatioValueText == null) return; _targetRatio = e.NewValue; TargetRatioValueText.Text = _targetRatio.ToString("F1"); }
@@ -482,29 +554,52 @@ namespace NeurofeedbackApp
             _calibrationTimer.Tick += (st, et) => {
                 var el = (DateTime.Now - _calibrationStartTime).TotalSeconds; CalibrationProgressBar.Value = el; 
                 if (!_isCalibrating) return;
-                CalibrationStatusText.Text = $"Calibrating ({Math.Round(el)}/60s)...";
-                if (el >= 10 && el <= 50 && double.TryParse(RatioText.Text, out double r)) _calibrationRatios.Add(r);
+
+                // [PROJECT]-[004] Calibration Honesty: Only accumulate if signal is OK
+                if (StatusText.Text == "OK") {
+                    CalibrationStatusText.Text = $"Calibrating ({Math.Round(el)}/60s)...";
+                    if (el >= 10 && el <= 50 && double.TryParse(RatioText.Text, out double r)) _calibrationRatios.Add(r);
+                } else {
+                    CalibrationStatusText.Text = "Paused: Signal Bad";
+                }
+
                 if (el >= 60) { 
                     _calibrationTimer?.Stop(); _isCalibrating = false; CalibrateButton.IsEnabled = true; 
                     if (_calibrationRatios.Count > 0) { double avg = 0; foreach (var v in _calibrationRatios) avg += v; avg /= _calibrationRatios.Count; TargetRatioSlider.Value = avg; CalibrationStatusText.Text = $"Done: {avg:F2}"; } 
-                    else CalibrationStatusText.Text = "Failed."; 
+                    else CalibrationStatusText.Text = "Failed (Bad Signal)."; 
                 }
             }; _calibrationTimer.Start(); 
         }
         private void AudioEnable_Checked(object s, RoutedEventArgs e) => _waveOut?.Play();
         private void AudioEnable_Unchecked(object s, RoutedEventArgs e) => _waveOut?.Pause();
-        private void BrowseAudio_Click(object s, RoutedEventArgs e) { var ofd = new OpenFileDialog { Filter = "Audio|*.mp3;*.wav" }; if (ofd.ShowDialog() == true) { try { bool was = _waveOut?.PlaybackState == PlaybackState.Playing; _waveOut?.Stop(); _waveOut?.Dispose(); _waveOut = new WaveOutEvent(); _volumeProvider = new VolumeSampleProvider(new LoopingSampleProvider(new AudioFileReader(ofd.FileName))) { Volume = _targetVolume }; _waveOut.Init(_volumeProvider); if (was) _waveOut.Play(); if (LoadedAudioText != null) LoadedAudioText.Text = System.IO.Path.GetFileName(ofd.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }
+        private void BrowseAudio_Click(object s, RoutedEventArgs e) { 
+            var ofd = new OpenFileDialog { Filter = "Audio|*.mp3;*.wav" }; 
+            if (ofd.ShowDialog() == true) { 
+                try { 
+                    bool was = _waveOut?.PlaybackState == PlaybackState.Playing; 
+                    _waveOut?.Stop(); 
+                    _waveOut?.Dispose(); 
+                    _audioReader?.Dispose(); // [WINDOW]-[009] Properly dispose old reader
+
+                    _waveOut = new WaveOutEvent(); 
+                    _audioReader = new AudioFileReader(ofd.FileName);
+                    if (_audioReader.Length == 0) throw new Exception("Selected audio file is empty.");
+                    _volumeProvider = new VolumeSampleProvider(new LoopingSampleProvider(_audioReader)) { Volume = _targetVolume }; 
+                    _waveOut.Init(_volumeProvider); 
+                    if (was) _waveOut.Play(); 
+                    if (LoadedAudioText != null) LoadedAudioText.Text = System.IO.Path.GetFileName(ofd.FileName); 
+                } catch (Exception ex) { MessageBox.Show("Audio Error: " + ex.Message); } 
+            } 
+        }
         private void MasterVolumeSlider_ValueChanged(object s, RoutedPropertyChangedEventArgs<double> e) => _masterVolume = (float)e.NewValue;
 
         private async void KillPython_Click(object s, RoutedEventArgs e)
         {
             try {
-                AppendToConsole("Force killing all python processes...");
-                foreach (var p in Process.GetProcessesByName("python"))
-                {
-                    try { p.Kill(true); } catch { }
-                }
-                await Task.Delay(1000);
+                AppendToConsole("Force killing managed python processes...");
+                if (_engineProc != null && !_engineProc.HasExited) { _engineProc.Kill(true); AppendToConsole("Killed Engine."); }
+                if (_emuProc != null && !_emuProc.HasExited) { _emuProc.Kill(true); AppendToConsole("Killed Emulator."); }
+                await Task.Delay(500);
                 AppendToConsole("Cleanup complete.");
             } catch (Exception ex) { AppendToConsole("Kill Error: " + ex.Message); }
         }
@@ -524,7 +619,35 @@ namespace NeurofeedbackApp
             _emuProc = LaunchPythonScript("emulator.py"); 
             _ = ConnectToEmulatorAsync(); // Connect to command socket
         }
-                        private Process? LaunchPythonScript(string fn) { try { string baseDir = AppDomain.CurrentDomain.BaseDirectory; string[] ps = { Path.GetFullPath(Path.Combine(baseDir, @"..\..\..\Backend\PyApp\" + fn)), Path.GetFullPath(Path.Combine(baseDir, @"..\..\..\..\..\src\Backend\PyApp\" + fn)), Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), @"src\Backend\PyApp\" + fn)), Path.GetFullPath(@"src\Backend\PyApp\" + fn) }; string sp = ""; foreach (var p in ps) if (File.Exists(p)) { sp = p; break; } if (!string.IsNullOrEmpty(sp)) { AppendToConsole("Launching: " + sp); var p = new Process(); p.StartInfo = new ProcessStartInfo("cmd.exe", "/k python -u \"" + sp + "\"") { UseShellExecute = true, CreateNoWindow = false, WorkingDirectory = Path.GetDirectoryName(sp) ?? "" }; p.Start(); return p; } else { AppendToConsole("Could not find script: " + fn); } } catch (Exception ex) { AppendToConsole(ex.Message); } return null; }
+
+        private Process? LaunchPythonScript(string fn) { 
+            try { 
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory; 
+                string[] ps = { 
+                    Path.GetFullPath(Path.Combine(baseDir, @"..\..\..\Backend\PyApp\" + fn)), 
+                    Path.GetFullPath(Path.Combine(baseDir, @"..\..\..\..\..\src\Backend\PyApp\" + fn)), 
+                    Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), @"src\Backend\PyApp\" + fn)), 
+                    Path.GetFullPath(@"src\Backend\PyApp\" + fn) 
+                }; 
+                string sp = ""; 
+                foreach (var p in ps) if (File.Exists(p)) { sp = p; break; } 
+                
+                if (!string.IsNullOrEmpty(sp)) { 
+                    AppendToConsole("Launching: " + sp); 
+                    var p = new Process(); 
+                    p.StartInfo = new ProcessStartInfo("cmd.exe", "/c python -u \"" + sp + "\"") { 
+                        UseShellExecute = false, 
+                        CreateNoWindow = true, 
+                        WorkingDirectory = Path.GetDirectoryName(sp) ?? "" 
+                    }; 
+                    p.Start(); 
+                    return p; 
+                } else { 
+                    AppendToConsole("Could not find script: " + fn); 
+                } 
+            } catch (Exception ex) { AppendToConsole(ex.Message); } 
+            return null; 
+        }
           private void LaunchBlueMuse_Click(object s, RoutedEventArgs e) { try { AppendToConsole("Attempting to launch BlueMuse via URI..."); Process.Start(new ProcessStartInfo("bluemuse://start?streamfirst=true") { UseShellExecute = true }); } catch (Exception ex) { AppendToConsole(ex.Message); } }
                 private void LaunchLabRecorder_Click(object s, RoutedEventArgs e) { try { 
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -537,27 +660,46 @@ namespace NeurofeedbackApp
             if (!string.IsNullOrEmpty(p)) Process.Start(new ProcessStartInfo(p) { WorkingDirectory = Path.GetDirectoryName(p) }); 
             else AppendToConsole("Not found: LabRecorder.exe"); 
         } catch (Exception ex) { AppendToConsole(ex.Message); } }
-        private void Window_Closing(object s, System.ComponentModel.CancelEventArgs e)
+        private async void Window_Closing(object s, System.ComponentModel.CancelEventArgs e)
         {
-            _cts.Cancel();
-            _waveOut?.Stop();
-            _waveOut?.Dispose();
+            if (_canClose) return;
+            e.Cancel = true;
 
-            // Try clean shutdown
-            _ = Task.Run(async () => {
+            _cts.Cancel();
+            _calibrationTimer?.Stop();
+            _volumeLerpTimer?.Stop();
+            
+            try {
+                if (_waveOut != null) {
+                    _waveOut.Stop();
+                    _waveOut.Dispose();
+                }
+                _audioReader?.Dispose();
+            } catch { }
+
+            // Perform async cleanup
+            await Task.Run(async () => {
                 await SendEmuCommand("quit");
                 try {
-                    await _wsLock.WaitAsync(100);
-                    if (_webSocket != null && _webSocket.State == WebSocketState.Open) {
-                        var cfg = new { type = "quit" };
-                        byte[] bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(cfg));
-                        await _webSocket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                    if (await _wsLock.WaitAsync(100)) {
+                        if (_webSocket != null && _webSocket.State == WebSocketState.Open) {
+                            var cfg = new { type = "quit" };
+                            byte[] bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(cfg));
+                            await _webSocket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                        }
                     }
                 } catch { } finally { try { _wsLock.Release(); } catch { } }
 
-                await Task.Delay(500); // Give them a moment to exit
-                foreach (var p in new[] { _engineProc, _emuProc }) if (p != null && !p.HasExited) try { p.Kill(true); } catch { }
+                await Task.Delay(500);
+                foreach (var p in new[] { _engineProc, _emuProc }) {
+                    if (p != null && !p.HasExited) {
+                        try { p.Kill(true); } catch { }
+                    }
+                }
             });
+
+            _canClose = true;
+            Dispatcher.Invoke(this.Close);
         }
     }
 }

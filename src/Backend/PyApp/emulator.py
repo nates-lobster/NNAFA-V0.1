@@ -14,9 +14,10 @@ CHANNEL_NAMES = ["TP9", "AF7", "AF8", "TP10"]
 
 # Global state for oscillators
 active_oscillators = []
-noise_level = 0.0
+noise_level = 5.0
 emu_gain = 1.0
 osc_lock = threading.Lock()
+connected_clients = 0
 
 def log(msg):
     print(f"[EMULATOR] {msg}")
@@ -36,8 +37,9 @@ def setup_lsl():
     return StreamOutlet(info)
 
 async def control_handler(websocket):
-    global active_oscillators, noise_level, emu_gain
+    global active_oscillators, noise_level, emu_gain, connected_clients
     log("C# App connected.")
+    connected_clients += 1
     try:
         async for message in websocket:
             try:
@@ -47,16 +49,22 @@ async def control_handler(websocket):
                     if cmd == "add_freq":
                         hz = float(data.get("hz", 10.0))
                         amp = float(data.get("amp", 10.0))
-                        active_oscillators.append({"hz": hz, "amp": amp, "phase": np.random.rand() * 2 * np.pi})
-                        log(f"Added {hz}Hz @ {amp}uV")
+                        # Clamp amp to safe range [EMU]-[003]
+                        amp = min(max(amp, 0.0), 200.0)
+                        # Check if already exists to prevent duplicates
+                        if not any(np.isclose(o["hz"], hz) for o in active_oscillators):
+                            active_oscillators.append({"hz": hz, "amp": amp, "phase": np.random.rand() * 2 * np.pi})
+                            log(f"Added {hz}Hz @ {amp}uV")
                     elif cmd == "remove_freq":
                         hz = float(data.get("hz"))
                         active_oscillators = [o for o in active_oscillators if not np.isclose(o["hz"], hz)]
                         log(f"Removed {hz}Hz")
                     elif cmd == "set_noise":
-                        noise_level = float(data.get("value", 5.0))
+                        val = float(data.get("value", data.get("amp", 0.0)))
+                        noise_level = min(max(val, 0.0), 100.0)
                     elif cmd == "set_gain":
-                        emu_gain = float(data.get("value", 1.0))
+                        val = float(data.get("value", 1.0))
+                        emu_gain = min(max(val, 0.1), 10.0)
                         log(f"Gain set to {emu_gain}")
                     elif cmd == "clear":
                         active_oscillators = []
@@ -68,10 +76,25 @@ async def control_handler(websocket):
                 log(f"Command Error: {e}")
     except websockets.exceptions.ConnectionClosed:
         log("C# App disconnected.")
+    finally:
+        connected_clients -= 1
 
 async def start_ws():
+    global connected_clients
     async with websockets.serve(control_handler, "127.0.0.1", 8766):
-        await asyncio.Future()
+        log("WebSocket server started on port 8766")
+        last_active_time = time.time()
+        while True:
+            # Ghost Process Watchdog [EMU]-[004] / [NEW]-[002]
+            # Shutdown if no client connected for > 60s
+            if connected_clients == 0:
+                if (time.time() - last_active_time) > 60.0:
+                    log("WATCHDOG: No active connections for 60s. Shutting down.")
+                    sys.exit(0)
+            else:
+                last_active_time = time.time() # Keep timer fresh while clients are connected
+            
+            await asyncio.sleep(5)
 
 def run_lsl_loop(outlet):
     dt = 1.0 / FS
@@ -84,13 +107,18 @@ def run_lsl_loop(outlet):
             sample = np.zeros(CHANNELS)
             t = sent_samples * dt
             with osc_lock:
+                # [EMU]-[001, 002] Thread-safe iteration and continuous phase
                 for osc in active_oscillators:
                     osc["phase"] = (osc["phase"] + 2 * np.pi * osc["hz"] * dt) % (2 * np.pi)
-                    # NOTE: Added signals directly use amp * sine
-                    sample += (osc["amp"] * emu_gain) * np.sin(osc["phase"])
+                    # Add some jitter to make it look realistic
+                    jitter = 0.05 * np.sin(2 * np.pi * 0.1 * t)
+                    sample += (osc["amp"] * emu_gain) * np.sin(osc["phase"] + jitter)
+                
                 if noise_level > 0:
-                    # White noise is distributed evenly across spectrum
-                    sample += np.random.normal(0, noise_level, CHANNELS)
+                    # [EMU]-[003] Clamped noise
+                    noise = np.random.normal(0, noise_level, CHANNELS)
+                    sample += np.clip(noise, -500, 500)
+            
             outlet.push_sample(sample)
             sent_samples += 1
         time.sleep(0.005)
